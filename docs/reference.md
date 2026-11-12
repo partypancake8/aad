@@ -126,10 +126,12 @@ against `aad/review/schemas/` before it is written.
 | `current.json` | the build the viewer shows: name, files, build id, part names |
 | `diff.json` | the latest diff the viewer or the CLI computed |
 | `history.jsonl` | pin events, for the per-class issue counts |
-| `baselines/<id>/` | copies of earlier builds (newest 10, `AAD_KEEP_BUILDS` sets 1 to 50) plus the builds the newest 3 packets were sent against |
+| `baselines/<id>/` | copies of earlier builds (newest 10; "Stored builds to keep" under More in the Revisions tab sets 1 to 50 and is remembered in that browser, `AAD_KEEP_BUILDS` sets the server default) plus the builds the newest 3 packets were sent against |
 | `packets/<time>/` | `packet.json` and `view.png` from each Send packet |
 
-Add `baselines/` and `packets/` to `.gitignore`. Pins and the scope lock are yours to commit or not.
+These files record absolute local paths (the project directory, the model files, the packet location in its
+prompt) and copies of the models, so add the whole `.cadreview/` to `.gitignore`. To share pins or the scope
+lock, commit just `pins.json` or `scope.json`, after checking them for paths you do not want to publish.
 
 ### A pin
 
@@ -179,7 +181,10 @@ diff, the pins and the scope lock all follow them.
 
 ## HTTP routes
 
-The viewer binds 127.0.0.1 only. The page uses these routes, and scripts can too:
+The viewer binds 127.0.0.1 only. The page uses these routes, and scripts can too. Every request needs a Host
+of `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>`, and every POST needs
+`Content-Type: application/json`; a POST with a foreign `Origin` or a cross-site `Sec-Fetch-Site` is refused
+with 403 (see Security in the README).
 
 | Route | |
 |---|---|
@@ -191,3 +196,4 @@ The viewer binds 127.0.0.1 only. The page uses these routes, and scripts can too
 | `GET /review/diff.json?against=ID` | diff against a baseline (`reviewed`, `previous`, a build or version id) |
 | `GET /review/pin-changes.json` | for each pin of the last packet, whether anything near it changed |
 | `POST /review/pins`, `/review/scope`, `/review/tour-decisions`, `/review/camera`, `/review/packet` | writes from the page |
+| `POST /review/revisions/keep` | `{"keep": n}`: stored builds to keep (1 to 50) for this server process; prunes older ones |

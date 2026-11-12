@@ -123,13 +123,29 @@ Review state lives in the CAD project, in `.cadreview/`, as plain JSON that both
       scope.json       the parts that may change in the next edit
       tour.json        the agent's change tour and your accept or reject per stop
       diff.json        the latest comparison
-      baselines/       earlier builds (the newest 10) and every build a recent packet was sent against
+      baselines/       earlier builds (the newest 10, "Stored builds to keep" in the Revisions tab changes it)
+                       and every build a recent packet was sent against
       packets/<time>/  packet.json and view.png from each Send packet
 
 Every file carries `"schema": "cadreview/1"` and is validated against the JSON Schemas in
-[`aad/review/schemas/`](aad/review/schemas) before it is written. Add `baselines/` and `packets/` to your
-`.gitignore`. [`docs/reference.md`](docs/reference.md) has the full format, every command and the optional
-viewer inputs (a part tree, named cameras, build status, colours for STL files).
+[`aad/review/schemas/`](aad/review/schemas) before it is written. [`docs/reference.md`](docs/reference.md) has
+the full format, every command and the optional viewer inputs (a part tree, named cameras, build status,
+colours for STL files).
+
+The review files record absolute local paths: the project directory, the model files a packet or baseline was
+made from, and the packet's own location in its agent prompt. They also hold copies of your models. Add the
+whole `.cadreview/` to `.gitignore`. If you do want to commit pins or the scope lock, commit only those files
+and read them first for paths you would rather not publish.
+
+## Security
+
+`aad view` listens on 127.0.0.1 only and has no login, so any program or user on the same machine that can
+reach the port can use it. What it does guard against is other web pages open in your browser: it answers
+only requests whose Host is `127.0.0.1`, `localhost` or `[::1]` on its own port (which stops DNS rebinding),
+and it accepts a write (POST, PUT or DELETE) only as `Content-Type: application/json` with no foreign
+`Origin` and no cross-site `Sec-Fetch-Site`, so another site cannot forge pins, a scope lock or a packet that
+an agent would then read. It never sends CORS headers, and every response carries
+`X-Content-Type-Options: nosniff` and `Cross-Origin-Resource-Policy: same-origin`.
 
 ## Navigation
 

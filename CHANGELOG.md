@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The viewer server refuses requests for any Host other than 127.0.0.1, localhost or [::1] on its port, and
+  writes that are not same-origin JSON; responses carry `nosniff` and a same-origin resource policy.
+- Revisions tab: "Stored builds to keep" (remembered in the browser); the hologram draws feature edges and
+  curved silhouettes only, without triangle diagonals.
+- Layout: weight inputs fit their values, pin actions wrap as whole groups, the tab row steps down instead of
+  clipping, long titles wrap, and the pin card stays clear of the view cube.
+
 ## 0.1.0 (2026-11-11)
 
 First release as its own project.
