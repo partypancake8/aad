@@ -33,18 +33,22 @@ body.no-panel{grid-template-columns:320px minmax(0,1fr);grid-template-areas:"top
 .i-focus{--ic:url(vendor/tabler-icons/focus.svg)}.i-clipboard-copy{--ic:url(vendor/tabler-icons/clipboard-copy.svg)}.i-stack-2{--ic:url(vendor/tabler-icons/stack-2.svg)}
 .i-map-pin-off{--ic:url(vendor/tabler-icons/map-pin-off.svg)}.i-player-play{--ic:url(vendor/tabler-icons/player-play.svg)}
 
-/* the toolbar is one row: below 1700 px Undo and Redo, below 1500 px the view tools (Ortho keeps its label) and
-   below 1360 px the mode buttons show icons only (each keeps its tooltip); the model name gives way last */
+/* the toolbar is one row: below 1700 px Undo and Redo, below 1500 px the view tools (Ortho keeps its label),
+   below 1360 px the mode buttons and below 1100 px Send packet show icons only (each keeps its tooltip); the model
+   name gives way last */
 #top{grid-area:top;display:flex;gap:8px;align-items:center;flex-wrap:nowrap;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);min-width:0}
 #top>*{flex:none}
-#brand{display:flex;align-items:center;gap:10px;min-width:0;margin-right:4px;flex:0 1 auto}
-#title{font-weight:700;font-size:17px;display:inline-flex;align-items:center;gap:10px;white-space:nowrap;min-width:0}
-#title .tname{overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* badge, name and status: three flex items; the badge never shrinks, the name and the status truncate inside their
+   own boxes (view.js fitBrand compacts and then drops the status before the name gives way) */
+#brand{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 auto;overflow:hidden;padding:4px 0 4px 4px;margin:-4px 4px -4px -4px}
+#envbadge{flex:none}#envbadge[hidden]{display:none}
+#title{font-weight:700;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
 #top .grow{flex:1 1 0;min-width:0}
 .environment-pill{display:inline-flex;align-items:center;padding:6px 13px;border-radius:999px;font-size:13px;font-weight:850;line-height:1;letter-spacing:.09em;color:#08111c;border:1px solid #ffffff70}
 .environment-pill.dev{background:#ffd43b;box-shadow:0 0 0 3px #ffd43b22}
 .environment-pill.prod{background:#4ade80;box-shadow:0 0 0 3px #4ade8022}
-#status{padding:3px 10px;border-radius:6px;border:1px solid var(--line);font-size:14px;font-variant-numeric:tabular-nums;transition:background .6s;white-space:nowrap}
+#status{padding:3px 10px;border-radius:6px;border:1px solid var(--line);font-size:14px;font-variant-numeric:tabular-nums;transition:background .6s;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}#status[hidden]{display:none}
 #status.ok{color:var(--ok)}#status.bad{color:var(--bad)}#status.pending{color:var(--warn)}
 #status.flash{background:#1f6feb66;transition:none}
 .tools{display:flex;gap:4px;align-items:center}
@@ -106,6 +110,8 @@ input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--acc);fle
 .pin-marker.resolved{background:#1a7f37}.pin-marker.orphan{background:#57606a;border-style:dashed}
 .pin-marker.region{border-radius:6px}
 .pin-marker.hot{outline:3px solid #ffd43b}
+/* a pin whose point is behind other geometry from this camera: dimmed with a dashed ring (the selected one stays solid) */
+.pin-marker.occluded{opacity:.45;border-style:dashed;box-shadow:none}
 .measure-label{font:700 13px ui-monospace,Menlo,monospace;color:#fff;background:#0d1117e8;border:1px solid #79c0ff;border-radius:6px;padding:3px 7px;white-space:nowrap}
 .measure-dot{width:10px;height:10px;border-radius:5px;background:#ffd43b;border:2px solid #0d1117}
 
@@ -258,6 +264,8 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 @media (max-width:1699px){#undo span,#redo span{display:none}}
 @media (max-width:1499px){#top [aria-label=View] button:not(#proj) span{display:none}}
 @media (max-width:1359px){#modes button span{display:none}}
+@media (max-width:1099px){#send span{display:none}}
+#send[hidden]{display:none}
 @media (max-width:900px){body,body.no-panel{grid-template-columns:1fr;grid-template-rows:auto auto 45vh auto auto auto;grid-template-areas:"top" "viewbar" "view" "panel" "side" "bottom";overflow:auto;height:auto}
   html,body{overflow:auto}#top{flex-wrap:wrap}#top .tools button span{display:none}}
 
@@ -362,3 +370,10 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 .paneh.meash button{padding:3px 8px;font-size:13px;font-weight:400}
 .paneh.meash .ic{width:16px;height:16px}
 .item.meas .mkind{font-size:13px}
+/* Pins toggle: the toolbar button, the list note while pins are hidden in the view, the part hidden chip */
+#pins-vis[hidden]{display:none}
+#pins-hidden{display:flex;align-items:center;gap:8px;margin:0 0 8px;padding:6px 8px 6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel2);color:var(--fg);font-size:13px}
+#pins-hidden[hidden]{display:none}#pins-hidden>span{flex:1 1 auto;min-width:0}#pins-hidden button{padding:3px 8px;font-size:13px}
+.chip.parthidden{background:#30363d;color:var(--fg);border:1px dashed #8b949e}.chip.parthidden[hidden]{display:none}
+/* the pin card's location line wraps between fields, never inside a number or a coordinate triple */
+#pin-where{word-break:normal;overflow-wrap:normal}#pin-where .fld{white-space:nowrap}#pin-where .fld:first-child{white-space:normal;overflow-wrap:anywhere}

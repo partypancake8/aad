@@ -19,7 +19,7 @@
 </script>
 </head><body>
 <header id="top">
-  <div id="brand"><span id="title">CAD viewer</span><span id="status">loading</span></div>
+  <div id="brand"><span id="envbadge" class="environment-pill" hidden></span><span id="title">CAD viewer</span><span id="status">loading</span></div>
   <div class="tools" id="modes" role="toolbar" aria-label="Mode">
     <button data-mode="select" class="on" title="Select (V): click a part, right-click for isolate and scope"><i class="ic i-pointer"></i><span>Select</span></button>
     <button data-mode="pin" title="Pin (P): click a part to drop a numbered pin with a note"><i class="ic i-map-pin"></i><span>Pin</span></button>
@@ -29,12 +29,13 @@
   </div>
   <span class="sep"></span>
   <div class="tools" role="toolbar" aria-label="View">
-    <button id="home" title="Home view (H)"><i class="ic i-home"></i><span>Home</span></button>
+    <button id="home" title="Home view (Shift+H)"><i class="ic i-home"></i><span>Home</span></button>
     <button id="fit" title="Fit everything visible"><i class="ic i-focus-centered"></i><span>Fit</span></button>
     <button id="fitsel" title="Fit the selection (F)"><i class="ic i-focus-2"></i><span>Fit sel</span></button>
     <button id="proj" title="Orthographic matches the review packet PNGs"><i class="ic i-perspective"></i><span id="proj-label">Ortho</span></button>
     <button id="sides" aria-pressed="false" title="Named sides: FRONT, BACK, LEFT, RIGHT, TOP, BOTTOM and an axis triad"><i class="ic i-cube"></i><span>Sides</span></button>
     <button id="grid" aria-pressed="false" title="Show ground grid"><i class="ic i-grid-dots"></i><span>Grid</span></button>
+    <button id="pins-vis" class="on" aria-pressed="true" hidden title="Show or hide the pins in the view (H): markers, pinned edges, repin trails and attached measurements; the Pins list stays"><i class="ic i-map-pin"></i><span>Pins</span></button>
     <button id="options" aria-label="Options" aria-haspopup="true" aria-expanded="false" title="Options: navigation, background, edges"><i class="ic i-settings"></i></button>
   </div>
   <span class="sep"></span>
@@ -43,7 +44,7 @@
     <button id="redo" disabled title="Redo (Shift+Cmd/Ctrl+Z or Ctrl+Y)"><i class="ic i-arrow-forward-up"></i><span>Redo</span></button>
   </div>
   <span class="grow"></span>
-  <button id="send" class="primary" hidden title="Write a review packet (JSON + annotated screenshot) and copy the agent prompt"><i class="ic i-send"></i><span>Send packet</span></button>
+  <button id="send" class="primary" hidden aria-label="Send packet" title="Send packet: write a review packet (JSON + annotated screenshot) and copy the agent prompt"><i class="ic i-send"></i><span>Send packet</span></button>
 </header>
 <nav id="viewbar" aria-label="Review views"><span class="lab">Views</span><span id="views"></span></nav>
 <aside id="side">
@@ -82,7 +83,7 @@
 </aside>
 <main id="view"><canvas id="c"></canvas><div id="camnote" hidden><span id="camnote-t"></span></div><div id="tip"></div><div id="modehint" hidden></div><div id="rect" hidden></div><div id="triad-label">X red, Y green, Z blue</div>
 <div id="cube-nav" role="toolbar" aria-label="View cube">
-  <button id="cube-home" title="Home view (H)" aria-label="Home view"><i class="ic i-home"></i></button>
+  <button id="cube-home" title="Home view (Shift+H)" aria-label="Home view"><i class="ic i-home"></i></button>
   <button id="cube-roll-ccw" title="Rotate the view 90 degrees counter-clockwise" aria-label="Rotate the view counter-clockwise"><i class="ic i-rotate"></i></button>
   <button id="cube-roll-cw" title="Rotate the view 90 degrees clockwise" aria-label="Rotate the view clockwise"><i class="ic i-rotate-clockwise"></i></button>
   <button id="cube-up" class="tri" title="Rotate to the face above" aria-label="Rotate to the face above"><i class="ic i-caret-up"></i></button>
@@ -114,6 +115,7 @@
   </div>
   <section class="tabpane" id="tab-pins">
     <div class="paneh">Pins <span class="muted" id="pins-sub"></span></div>
+    <div id="pins-hidden" hidden><i class="ic i-map-pin-off"></i><span>Pins hidden in view</span><button id="pins-show" title="Show the pins in the view again (H)"><i class="ic i-eye"></i>Show</button></div>
     <ol id="pin-list"></ol>
     <div class="paneh meash"><span>Measurements <span class="badge" id="meas-count"></span></span><span class="grow"></span>
       <label title="Show unattached measurements outside Measure mode too (on by default in Measure mode)"><input type="checkbox" id="meas-keep"> Keep visible</label>

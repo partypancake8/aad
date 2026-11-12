@@ -24,6 +24,11 @@ export function initReview(V){
   let server=null,classes=[],mode='select',diff=null,diffByNode=new Map(),tourIdx=-1,measA=null,lastPacket=null;
   let pinsUpdated=null,lastCam='',writing=Promise.resolve(),persisted={pins:'',scope:'',dec:''},dialogCtx=null,hotPin=null;
   const markers=new Map();                                        // pin id -> CSS2DObject
+  // Pins show/hide (toolbar Pins, key H): view state only, remembered in this browser, never in pins.json or the undo
+  // history. forceShow draws them anyway while Send packet renders its screenshot.
+  let pinsShown=true,forceShow=false;
+  try{pinsShown=localStorage.getItem('aad-pins-shown')!=='0';}catch(e){}
+  const partHidden=new Map(),occluded=new Set();                  // pin id -> its part is hidden; pins behind geometry
   const measGroup=new THREE.Group();measGroup.name='Measurements';V.scene.add(measGroup);
   const ghost=new THREE.Group();ghost.name='Baseline ghost';ghost.visible=false;V.scene.add(ghost);
   let ghostKey=null;
@@ -72,6 +77,7 @@ export function initReview(V){
   function setMode(m,keepFollow=false){
     if(!MODES.hasOwnProperty(m))m='select';
     mode=m;measA=null;clearMeasDraft();if(!keepFollow)followParent=null;RP?.onMode(m);measModeChanged();
+    if(m==='pin'||m==='region')showPins();                        // a pin is never dropped or picked invisibly
     document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
     const fp=followParent&&S.pins.find(p=>p.id===followParent);
     $('modehint').hidden=!MODES[m];$('modehint').textContent=fp?`Follow-up to pin #${fp.n}: click a part. Esc leaves.`:MODES[m];
@@ -89,6 +95,7 @@ export function initReview(V){
       return false;
     }
     if(mode==='measure'&&(e.key==='Delete'||e.key==='Backspace')){deleteMeasAtPointer();return true;}
+    if(e.key==='h'&&!e.shiftKey){setPinsShown(!pinsShown);return true;}
     const m=KEYS[e.key.toLowerCase()];
     if(m&&!e.shiftKey&&!(V.M&&V.M.movable)){setMode(m);return true;}
     return false;
@@ -213,12 +220,15 @@ export function initReview(V){
   for(const ev of ['pointerdown','dblclick','contextmenu'])card.addEventListener(ev,e=>e.stopPropagation());
   function openDialog(c){
     const keepNote=dialogCtx&&!card.hidden?$('pin-note').value:null;
-    dialogCtx=c;c.anchor=dialogAnchor(c);cardOffset=null;cardPos=null;
-    const where=c.kind!=='region'?`${c.info.name}  local ${c.info.local.map(x=>x.toFixed(1)).join(', ')} mm`:
-      `${c.keys.length} part${c.keys.length===1?'':'s'}: `+c.keys.slice(0,5).map(k=>V.nodes.get(k)?.leaf?.name||k).join(', ')+(c.keys.length>5?', ...':'');
+    dialogCtx=c;c.anchor=dialogAnchor(c);cardOffset=null;cardPos=null;showPins();
+    // the location line wraps between fields (name, coordinates, edge length) but never inside a number or the triple
+    const fld=t=>`<span class="fld">${esc(t)}</span>`;
+    const where=c.kind!=='region'?fld(c.info.name)+' '+fld(`local ${c.info.local.map(x=>x.toFixed(1)).join(', ')} mm`)+
+      (c.kind==='edge'&&c.edge?.length_mm!=null?' '+fld(`edge ${(+c.edge.length_mm).toFixed(2)} mm`):''):
+      esc(`${c.keys.length} part${c.keys.length===1?'':'s'}: `)+c.keys.slice(0,5).map(k=>fld(V.nodes.get(k)?.leaf?.name||k)).join(', ')+(c.keys.length>5?', ...':'');
     const par=c.parent&&S.pins.find(p=>p.id===c.parent);
     $('pin-was').hidden=!c.was;$('pin-was').textContent=c.was||'';
-    $('pin-where').textContent=where;$('pin-dialog-h').textContent=c.title||(par?`Follow-up to pin #${par.n}`:c.kind==='region'?'New region pin':c.kind==='edge'?'New edge pin':'New pin');
+    $('pin-where').innerHTML=where;$('pin-dialog-h').textContent=c.title||(par?`Follow-up to pin #${par.n}`:c.kind==='region'?'New region pin':c.kind==='edge'?'New edge pin':'New pin');
     $('pin-note').value=c.note||keepNote||'';setPinClass(c.issue_class||pinClass);$('pin-severity').value=c.severity||$('pin-severity').value||'medium';
     const lm=S.meas[S.meas.length-1];$('pin-measure-row').hidden=!(lm&&!lm.pin);
     setDraftMarker(c);card.hidden=false;placeCard();V.dirty();
@@ -321,7 +331,8 @@ export function initReview(V){
     li.innerHTML=`<div class="ph"><span class="num sev-${p.severity} g-${groupOf(classes,p.issue_class)}${done?' resolved':''}">${p.n}</span>
       <span class="cls">${esc(label(p.issue_class))}</span>${groupBadge(classes,groups,p.issue_class)}<span class="chip">${esc(p.severity)}</span>${RP.badge(p)}
       ${p.status==='reopened'?'<span class="chip reopened">reopened</span>':''}${p.status==='not_fixed'?`<span class="chip notfixed">Not fixed, attempt ${p.attempts||1}</span>`:''}
-      ${unchangedHere(p)?`<span class="chip same" title="${esc(unchangedTitle(p))}">Unchanged here since your packet</span>`:''}${orphan?'<span class="chip orphan">orphaned</span>':''}</div>
+      ${unchangedHere(p)?`<span class="chip same" title="${esc(unchangedTitle(p))}">Unchanged here since your packet</span>`:''}${orphan?'<span class="chip orphan">orphaned</span>':''}
+      <span class="chip parthidden" title="Its part is hidden in the view (tree, isolate or solo), so its marker is too"${partHidden.get(p.id)?'':' hidden'}>part hidden</span></div>
       <div class="acts">${acts}</div>
       ${par?`<div class="where">follow-up to #${par.n}</div>`:''}${RP.was(p)}
       <div class="note">${esc(p.note)||`<span class="muted">${esc(meaningOf(p.issue_class))}</span>`}</div>
@@ -361,7 +372,7 @@ export function initReview(V){
     renderMarkers();
   }
   function flyToPin(p){
-    hotPin=p.id;
+    hotPin=p.id;showPins();
     const k=p.anchor?keyFor(p.anchor.part):null,keys=p.parts.map(keyFor).filter(Boolean);
     V.camAction(()=>{
       if(k){const m=meshOf(k);m.updateMatrixWorld();V.flyToPoint(m.localToWorld(new THREE.Vector3(...p.anchor.local)).toArray());}
@@ -377,7 +388,7 @@ export function initReview(V){
     for(const p of S.pins){
       if(p.status==='resolved')continue;                         // a resolved pin leaves the model at once
       const el=document.createElement('div'),orphan=orphaned(p);
-      el.className=`pin-marker sev-${p.severity} g-${groupOf(classes,p.issue_class)}${RP.isRepinned(p)?' repinned':''}${p.status==='not_fixed'?' notfixed':''}${orphan?' orphan':''}${p.kind==='region'?' region':''}${p.id===hotPin?' hot':''}`;
+      el.className=`pin-marker sev-${p.severity} g-${groupOf(classes,p.issue_class)}${RP.isRepinned(p)?' repinned':''}${p.status==='not_fixed'?' notfixed':''}${orphan?' orphan':''}${p.kind==='region'?' region':''}${p.id===hotPin?' hot':''}${occluded.has(p.id)&&p.id!==hotPin?' occluded':''}`;
       el.textContent=String(p.n);el.title=`#${p.n} ${label(p.issue_class)}: ${p.note}`+(orphan?' (part missing in this build)':'');el.dataset.pin=p.id;
       el.addEventListener('pointerdown',e=>e.stopPropagation());
       el.addEventListener('click',e=>{e.stopPropagation();flyToPin(p);});
@@ -389,16 +400,63 @@ export function initReview(V){
       markers.set(p.id,o);
     }
     RP.renderTrails();
-    V.dirty();
+    occSig='';V.dirty();
   }
-  // markers follow their part's visibility (CSS2D does not check ancestors)
+  // markers follow their part's visibility (CSS2D does not check ancestors) and the Pins toggle; a hidden part's
+  // pin says "part hidden" in the list
   function beforeLabels(){
     measBeforeLabels();
-    for(const [,o] of markers){
+    const show=pinsShown||forceShow;
+    for(const [id,o] of markers){
       const vis=o.userData.key?V.effVisible(o.parent):o.userData.keys?o.userData.keys.some(k=>V.leafShown(k)):true;
-      o.visible=vis;
+      o.visible=vis&&show;o.userData.partShown=vis;
+      if(!!partHidden.get(id)!==!vis){partHidden.set(id,!vis);
+        const c=document.querySelector(`#pin-list li[data-pin="${id}"] .chip.parthidden`);if(c)c.hidden=vis;}
     }
     RP?.beforeLabels();
+    if(!forceShow)occlusionTick();
+  }
+  function setPinsShown(on){
+    pinsShown=!!on;try{localStorage.setItem('aad-pins-shown',pinsShown?'1':'0');}catch(e){}
+    const b=$('pins-vis');
+    if(b){b.classList.toggle('on',pinsShown);b.setAttribute('aria-pressed',String(pinsShown));b.querySelector('.ic').className='ic '+(pinsShown?'i-map-pin':'i-map-pin-off');}
+    $('pins-hidden').hidden=pinsShown;occSig='';V.dirty();
+  }
+  function showPins(){if(!pinsShown)setPinsShown(true);}
+  $('pins-vis').onclick=()=>setPinsShown(!pinsShown);$('pins-show').onclick=()=>setPinsShown(true);
+  // A pin whose point is behind other visible geometry from the current camera draws dimmed with a dashed ring (the
+  // selected pin stays solid). One BVH ray per point pin when the view settles; with few pins also while it moves.
+  const OCC_LIVE_MAX=24,OCC_SETTLE_MS=180,OCC_LIVE_MS=120;
+  let occSig='',occAt=0,occTimer=0,occRuns=0;
+  const _o=new THREE.Vector3(),_h=new THREE.Vector3();
+  function occlusionSig(){
+    const c=V.cam;c.updateMatrixWorld();let s=c.matrixWorld.elements.map(x=>x.toFixed(3)).join()+'|'+c.zoom.toFixed(4)+'|'+(V.clipSig?V.clipSig():'')+'|'+hotPin;
+    for(const [id,o] of markers)if(o.visible&&o.userData.key){o.getWorldPosition(_o);s+='|'+id+_o.x.toFixed(2)+','+_o.y.toFixed(2)+','+_o.z.toFixed(2);}
+    return s;
+  }
+  function occlusionTick(){
+    const sig=occlusionSig();if(sig===occSig)return;
+    const t=performance.now(),live=markers.size<=OCC_LIVE_MAX;
+    clearTimeout(occTimer);
+    occTimer=setTimeout(()=>{occTimer=0;const s=occlusionSig();runOcclusion();occSig=s;},OCC_SETTLE_MS);   // after the camera stops
+    if(live&&t-occAt>=OCC_LIVE_MS){runOcclusion();occSig=sig;}
+  }
+  function runOcclusion(){
+    occAt=performance.now();occRuns++;
+    const r=V.canvas.getBoundingClientRect(),c=V.cam,eps=Math.max(0.3,V.bbox.getSize(_h).length()*0.002);let changed=false;
+    for(const [id,o] of markers){
+      let occ=false;
+      if(o.visible&&o.userData.key&&r.width>0){
+        o.getWorldPosition(_o);const p=_o.clone().project(c);
+        if(p.z>=-1&&p.z<=1&&Math.abs(p.x)<=1&&Math.abs(p.y)<=1){
+          const h=V.pickHit({clientX:r.left+(p.x+1)/2*r.width,clientY:r.top+(1-p.y)/2*r.height});
+          if(h){const da=-_o.clone().applyMatrix4(c.matrixWorldInverse).z,dh=-_h.copy(h.point).applyMatrix4(c.matrixWorldInverse).z;occ=dh<da-eps;}
+        }
+      }
+      if(occ!==occluded.has(id)){changed=true;if(occ)occluded.add(id);else occluded.delete(id);}
+      o.element.classList.toggle('occluded',occ&&id!==hotPin);
+    }
+    if(changed)V.dirty();
   }
 
   // ---- measurements ----
@@ -427,7 +485,7 @@ export function initReview(V){
   let keepVis=false;
   function measModeChanged(){keepVis=mode==='measure';const k=$('meas-keep');if(k)k.checked=keepVis;MEAS.hideHover();V.dirty();}
   $('meas-keep').onchange=e=>{keepVis=e.target.checked;V.dirty();};
-  const measShown=m=>keepVis||(!!m.pin&&m.pin===hotPin);
+  const measShown=m=>m.pin?(pinsShown||forceShow)&&(keepVis||m.pin===hotPin):keepVis;   // attached ones follow the Pins toggle
   function deleteMeas(m){
     S.meas=S.meas.filter(x=>x!==m);for(const p of S.pins)if(p.measure&&p.measure.id===m.id){p.measure=null;p.updated=now();}
     changed();
@@ -562,7 +620,7 @@ export function initReview(V){
     for(const b of bl){const L=revLabel(b),c=cnt.get(b.id),n=c?.differ;
       const cls=[b.id===revSel?'sel':'',b.id===revPre?'pre':'',b.id===revPeek?'peek':'',holoLoading===b.id?'loading':''].filter(Boolean).join(' ');
       h+=`<li class="${cls}" data-rev="${esc(b.id)}" role="option" aria-selected="${b.id===revSel}" title="${esc(b.label)}"><div class="r1"><span class="t">${esc(L.t)}</span><span class="lab">${esc(L.lab)}</span></div>
-        <div class="sub">${n==null?(c?'not readable':'counting...'):n===0?'same as now':`${n} part${n===1?'':'s'} differ from now`}${L.sub?', '+esc(L.sub):''}</div></li>`;}
+        <div class="sub">${n==null?(c?'not readable':'counting...'):n===0?'same as now':`${n} part${n===1?' differs':'s differ'} from now`}${L.sub?', '+esc(L.sub):''}</div></li>`;}
     if(!bl.length)h+=`<li class="now"><div class="sub">No earlier revision yet: one appears after a rebuild or a packet.</div></li>`;
     ol.innerHTML=h;
     ol.querySelectorAll('li[data-rev]').forEach(li=>{const id=li.dataset.rev;if(!id)return;
@@ -885,7 +943,7 @@ export function initReview(V){
 
   // ---- send packet ----
   async function sendPacket(){
-    V.renderNow();
+    forceShow=true;V.renderNow();                                 // the packet shows the pins whatever the Pins toggle says
     const src=V.canvas,W=src.width,H=src.height,dpr=W/src.clientWidth;
     const out=document.createElement('canvas');out.width=W;out.height=H;const g=out.getContext('2d');g.drawImage(src,0,0);
     const marks=[],v=new THREE.Vector3(),SEV={high:'#d1242f',medium:'#bc4c00',low:'#9a6700'};
@@ -900,6 +958,7 @@ export function initReview(V){
       g.lineWidth=3*dpr;g.strokeStyle='#ffffff';g.stroke();g.fillStyle='#ffffff';g.font=`800 ${15*dpr}px -apple-system,system-ui,sans-serif`;
       g.textAlign='center';g.textBaseline='middle';g.fillText(String(p.n),x,y+1*dpr);marks.push({n:p.n,x:+(x/dpr).toFixed(1),y:+(y/dpr).toFixed(1),pin:p.id});
     }
+    forceShow=false;V.dirty();
     const ds=diff?{against:diff.a.label,against_id:diff.a.id,summary:diff.summary,collateral:diff.collateral,
       parts:diff.parts.filter(r=>r.status!=='unchanged').slice(0,60).map(r=>({name:r.name,status:r.status,collateral:r.collateral,warnings:r.warnings.map(w=>w.kind)}))}:null;
     const payload={camera:V.camera(),selection:V.sel?V.partRef(V.sel.key):null,pins:S.pins,scope:S.scope,measurements:S.meas,
@@ -947,12 +1006,12 @@ export function initReview(V){
 
   RP=initRepin({V,THREE,CSS2DObject,$,S,server:()=>server,setMode,openDialog,changed,now,esc,label,meaningOf,keyFor,meshOf,boxOf,nodeKey,toast,
     setHot:id=>{hotPin=id;},markerOf:id=>markers.get(id)});
-  document.body.classList.remove('no-panel');$('panel').hidden=false;$('send').hidden=false;
+  document.body.classList.remove('no-panel');$('panel').hidden=false;$('send').hidden=false;$('pins-vis').hidden=false;setPinsShown(pinsShown);
   setMode('select');
   // edge lines the page draws over the view: open edge pins in their pin colour, and the edge of the pin being edited
   function edgeOverlays(){
     const out=[];
-    for(const p of S.pins){if(p.kind!=='edge'||!p.edge||p.status==='resolved'||!p.anchor)continue;const k=keyFor(p.anchor.part);
+    if(pinsShown||forceShow)for(const p of S.pins){if(p.kind!=='edge'||!p.edge||p.status==='resolved'||!p.anchor)continue;const k=keyFor(p.anchor.part);
       if(k)out.push({mesh:meshOf(k),pts:p.edge.points,cls:'sev-'+p.severity+' g-'+groupOf(classes,p.issue_class),pin:p.id});}
     if(!card.hidden&&dialogCtx?.kind==='edge'&&dialogCtx.info.mesh)out.push({mesh:dialogCtx.info.mesh,pts:dialogCtx.edge.points,cls:'draft'});
     if(mode==='measure'&&measA?.type==='edge')out.push({mesh:measA.mesh,pts:measA.chain.pts,cls:'draft'});
@@ -964,12 +1023,12 @@ export function initReview(V){
     return {open:true,kind:dialogCtx?.kind,card:{x:cr.x,y:cr.y,w:cr.width,h:cr.height},
       point:anchorPx?{x:hr.x+anchorPx.x,y:hr.y+anchorPx.y}:null,dragged:!!cardOffset};
   }
-  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,afterRender:()=>{placeCard();holoTheme();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
+  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,setPinsShown,pinsShown:()=>pinsShown,afterRender:()=>{placeCard();holoTheme();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
     state:()=>({mode,followParent,repin:RP.state(),pins:S.pins.map(p=>({id:p.id,n:p.n,status:p.status,issue_class:p.issue_class,group:groupOf(classes,p.issue_class),repinned:RP.isRepinned(p),history:(p.history||[]).length,kind:p.kind,parts:p.parts.length,orphaned:orphaned(p),measure:!!p.measure,parent:p.parent||null,attempts:p.attempts||0})),
       pinChanges:pinChanges?{against:pinChanges.against,unchanged:Object.keys(pinChanges.pins||{}).filter(id=>{const p=S.pins.find(x=>x.id===id);return p&&unchangedHere(p);})}:null,
       next:S.next,scope:S.scope.map(p=>p.node),measurements:S.meas.map(m=>m.distance),measureKinds:S.meas.map(m=>m.kind||'point_point'),measPending:measA?measA.type:null,measKeep:keepVis,decisions:S.decisions,tourIdx,
       diff:diff?{against:diff.a.id,kind:diff.a.kind||null,b:diff.b.build,summary:diff.summary,collateral:diff.collateral,tinted:V.meshList.filter(m=>tintFor(m.userData.key)).length}:null,
-      editor:editorState(),ghost:ghost.children.length,ghostVisible:ghost.visible,
+      editor:editorState(),pinsShown,occluded:[...occluded].filter(id=>markers.get(id)?.visible),occRuns,partHidden:[...partHidden].filter(([,v])=>v).map(([k])=>k),ghost:ghost.children.length,ghostVisible:ghost.visible,
       revisions:{selected:revSel,preselected:revPre,peek:revPeek,rows:(server?.baselines||[]).map(b=>({id:b.id,kind:b.kind,differ:revRows.find(r=>r.id===b.id)?.differ??null}))},
       holo:{visible:holo.visible,parts:new Set(holo.children.map(o=>o.userData.holoOf)).size,edges:holo.children.filter(o=>o.userData.holo==='edge').length,
         wire:holo.children.filter(o=>o.userData.holo==='wire').length,kinds:[...new Set(holo.children.map(o=>o.userData.holo))].sort(),

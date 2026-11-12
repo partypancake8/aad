@@ -101,7 +101,10 @@ parts) renders what an equidistant fisheye lens at `eye` would see, for checking
 ### Build status (`build.json`)
 
 A `build.json` next to the first model with `{"ok": true}` or `{"ok": false}` makes the status line read
-"build ok" or "build FAILED". Without it the status line only shows when the model last changed.
+"build ok" or "build FAILED". Optional integer `interference_pairs` and `design_violations` add their counts
+(`{"ok": true, "interference_pairs": 0, "design_violations": 3}`). Without it the status line only shows when the
+model last changed. On a narrow toolbar the status shortens to "build ok" or "build failed" and then hides
+before the model name is cut; the full line is in its tooltip.
 
 ### STL and PLY colours (`viewer-materials.json`)
 

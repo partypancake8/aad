@@ -188,7 +188,8 @@ steps to the adjacent face. Each move is one undo step.
 | Key | |
 |---|---|
 | V, P, G, M, S | Select, Pin, Region, Measure, Scope |
-| H, F | Home, fit selection |
+| H | show or hide the pins in the view (markers, pinned edges, repin trails, attached measurements) |
+| Shift+H, F | Home, fit selection |
 | `\` (hold) | show the selected old revision solid in place of the current model |
 | Delete | remove the measurement under the pointer |
 | Esc | cancel the current step, then leave the tool |

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Pins toggle in the toolbar (H): hides every pin marker, pinned edge, repin trail and attached measurement in
+  the view and brings them back. View state only, remembered in the browser, never an undo step or a change to
+  pins.json; Pin mode, dropping or repinning a pin and flying to one turn it back on, and Send packet always
+  draws the pins. Home moves to Shift+H.
+- A pin whose point is behind other visible geometry draws dimmed with a dashed ring (the selected pin stays
+  solid); a pin whose part is hidden loses its marker and its row says "part hidden".
+- Toolbar: the DEV or PROD badge, the model name and the build status no longer overlap at narrow widths; the
+  status compacts, then hides, before the name truncates. `build.json` may carry `interference_pairs` and
+  `design_violations`.
+- Revisions rows say "1 part differs"; the pin card's location line never breaks inside a number.
 - `aad agent install` and `aad agent print`: an `aad` skill for Claude Code (`/aad`) and Codex (`$aad`) that
   orients a fresh agent on aad (the loop, vocabulary, commands, reading a pin, the ten rules) without starting
   any work. User, project or any directory; never replaces a different file without `--force`; keeps local

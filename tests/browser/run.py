@@ -7,6 +7,7 @@ PLAYWRIGHT_MODULE at the package when it is not resolvable from this folder. The
 state live in a new temp directory, so a real project is never touched. Exit 0 when both checks pass.
 """
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -43,6 +44,15 @@ def main(argv=None):
     demo, proj = os.path.join(tmp, "demo"), os.path.join(tmp, "proj")
     os.makedirs(proj)
     shutil.copytree(DEMO, demo, ignore=shutil.ignore_patterns("*.py", "__pycache__"))
+    # the toolbar check opens the "good" version with a DEV badge and a long name
+    vj = os.path.join(demo, "versions.json")
+    with open(vj) as f:
+        spec = json.load(f)
+    for v in spec["versions"]:
+        if v["id"] == "good":
+            v["title"] = "DEV | Bracket demo good version with a deliberately long model title for the narrow toolbar check"
+    with open(vj, "w") as f:
+        json.dump(spec, f)
     model = os.path.join(demo, "bad", "bracket_demo.glb")
     url = f"http://127.0.0.1:{a.port}/"
     env = dict(os.environ, PYTHONPATH=ROOT, AAD_PYTHON=os.environ.get("AAD_PYTHON", sys.executable))

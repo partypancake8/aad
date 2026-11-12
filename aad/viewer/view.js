@@ -20,22 +20,40 @@ import {PLYLoader} from 'three/addons/loaders/PLYLoader.js';
 const fetch=(input,init)=>window.fetch(typeof input==='string'&&input.startsWith('/')?new URL('.'+input,location.href):input,init);
 const $=id=>document.getElementById(id);
 const log=(level,msg)=>window.__log&&window.__log(level,msg);
+// The toolbar's left group is three flex items: the DEV or PROD badge (never shrinks), the model name and the build
+// status. When the row runs out of width, fitBrand() shortens in this order: the status to its compact form ("build
+// ok"), then the status goes, then the name truncates with an ellipsis down to about 8 characters. Full texts stay in
+// the tooltips.
 function setViewerTitle(title){
-  const el=$('title'),match=/^(PROD|DEV) \| (.+)$/.exec(title);
-  el.replaceChildren();
+  const el=$('title'),badge=$('envbadge'),match=/^(PROD|DEV) \| (.+)$/.exec(title);
+  badge.hidden=!match;
   if(match){
-    const badge=document.createElement('span');
-    badge.className='environment-pill '+match[1].toLowerCase();
-    badge.textContent=match[1];
+    badge.className='environment-pill '+match[1].toLowerCase();badge.textContent=match[1];
     badge.title=match[1]==='DEV'?'Development working copy':'Production baseline';
-    const name=document.createElement('span');name.className='tname';name.textContent=match[2];
-    el.append(badge,name);
-  }else{const name=document.createElement('span');name.className='tname';name.textContent=title;el.append(name);}
+  }
+  el.textContent=match?match[2]:title;
   const icon=$('favicon');                          // tint the tab icon like the DEV or PROD badge
   if(icon)icon.setAttribute('href',match?'favicon-'+match[1].toLowerCase()+'.svg':'favicon.svg');
   el.title=title;                                  // the name may be cut short on a narrow toolbar
   document.title=title+' viewer';
+  el.style.minWidth='';fitBrandSoon();
 }
+function fitBrand(){
+  const b=$('brand'),t=$('title'),st=$('status'),top=$('top');if(!b||!t||!st)return;
+  if(!t.style.minWidth&&t.textContent){            // the name's floor: about 8 characters, or all of a shorter name
+    t.style.minWidth='0px';const w=t.scrollWidth,n=t.textContent.length;
+    t.style.minWidth=Math.ceil(n>9?w/n*8.5:w)+'px';
+  }
+  const full=st.dataset.full||st.textContent,short=st.dataset.short||full;
+  const cut=e=>!e.hidden&&e.scrollWidth>e.clientWidth+0.5,over=()=>top.scrollWidth>top.clientWidth+0.5;
+  for(let lv=0;lv<3;lv++){
+    b.dataset.fit=String(lv);st.hidden=lv===2;st.textContent=lv===0?full:short;
+    if(lv===2||!(cut(t)||cut(st)||over()))break;
+  }
+}
+let brandRaf=0;const fitBrandSoon=()=>{if(!brandRaf)brandRaf=requestAnimationFrame(()=>{brandRaf=0;fitBrand();});};
+// refit when the window or any toolbar group changes size (labels collapse, buttons appear)
+if(window.ResizeObserver){const ro=new ResizeObserver(fitBrandSoon),tb=document.getElementById('top');ro.observe(tb);for(const c of tb.children)if(c.id!=='brand')ro.observe(c);}
 const D2R=Math.PI/180,R2D=180/Math.PI;
 THREE.Object3D.DEFAULT_UP.set(0,0,1);
 CameraControls.install({THREE});
@@ -1278,7 +1296,7 @@ addEventListener('keydown',e=>{
     if(sel){clearSel();commit();}return;
   }
   if((e.key==='f'||e.key==='F')&&sel)return camAction(()=>focusKey(sel.key,false));
-  if((e.key==='h'||e.key==='H')&&!mask)return camAction(goHome);
+  if((e.key==='h'||e.key==='H')&&(e.shiftKey||!R)&&!mask)return camAction(goHome);   // Shift+H (H alone toggles pins when review is on)
   if(mask)maskKey(e);
 });
 
@@ -1399,7 +1417,10 @@ function showStatus(flash){
   else if(s.build_ok===false){txt+=', build FAILED';cls='bad';}
   if(!pending&&s.interference_pairs!=null)txt+=', '+s.interference_pairs+' interference'+(s.interference_pairs===1?'':'s');
   if(!pending&&s.design_violations!=null)txt+=', '+s.design_violations+' design violation'+(s.design_violations===1?'':'s');
-  el.textContent=txt;el.className=cls;el.title=(s.files||[]).map(f=>f.name).join(', ')||s.glb||'';
+  // compact form for a narrow toolbar: the build verdict alone (the time and counts stay in the tooltip)
+  const short=pending?'checks pending':s.build_ok===true?'build ok':s.build_ok===false?'build failed':txt.replace(/^(updated|rebuilt) /,'');
+  const files=(s.files||[]).map(f=>f.name).join(', ')||s.glb||'';
+  el.dataset.full=txt;el.dataset.short=short;el.textContent=txt;el.className=cls;el.title=txt+(files?'\n'+files:'');fitBrandSoon();
   if(flash){el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),900);}
 }
 async function fetchTree(){tree=await (await fetch('/tree.json?ts='+Date.now())).json();}
@@ -1488,7 +1509,7 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
   get cam(){return cam;},get meshList(){return meshList;},get modelRoot(){return modelRoot;},get M(){return M;},get sel(){return sel;},
   get bbox(){return bbox;},get ready(){return ready;},get restoring(){return restoring;},
   setLeftAction:a=>{leftAction=a==='none'?ACT.NONE:ACT.ROTATE;mouseMap();},
-  pickHit,pickInfo,pickEdge,edgeScreen,partRef,select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
+  pickHit,pickInfo,pickEdge,edgeScreen,partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
   dirty:()=>{dirty=true;},renderNow:()=>{if(!SOFT)renderNow();},soft:SOFT,
   camera:()=>{const c=snapCam();return {projection:c.proj==='o'?'ortho':'persp',position:c.p,target:c.t,up:c.u,zoom:c.z,view:c.v,fov:cam.isPerspectiveCamera?cam.fov:null};},
   hiddenKeys:()=>[...vis].filter(([,v])=>!v).map(([k])=>k)};}
@@ -1508,7 +1529,7 @@ window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clear
     pivot:pivotFor(null)?.toArray()||null,viewCentre:viewCentre()?.toArray()||null,pivotShown:pivotObj.visible,pivotAt:pivotObj.visible?pivotObj.position.toArray():null,
     hidden:[...vis].filter(([,v])=>!v).map(([k])=>k),clip:clipPlanes.map(p=>[p.normal.toArray(),p.constant]),
     explode:+$('explode').value,grid:showGrid,view:activeView,cameraView:camMode?camMode.name:null,fov:cam.isPerspectiveCamera?cam.fov:null,
-    proj:cam===ortho?'ortho':'persp',projDisabled:$('proj').disabled,fisheye:fishOn(),fishRect:FISH.rect,camLabel:$('camnote').hidden?null:$('camnote-t').textContent,orbit:controls.enabled,selected:sel&&sel.key,renders,ctrlTrue,status:$('status').textContent,
+    proj:cam===ortho?'ortho':'persp',projDisabled:$('proj').disabled,fisheye:fishOn(),fishRect:FISH.rect,camLabel:$('camnote').hidden?null:$('camnote-t').textContent,orbit:controls.enabled,selected:sel&&sel.key,renders,ctrlTrue,status:$('status').dataset.full||$('status').textContent,brandFit:$('brand').dataset.fit,
     history:hist.length,hp,undo:!$('undo').disabled,redo:!$('redo').disabled,
     mask:mask?{p:mask.position.toArray(),pieces:maskPieces()}:null,sides:showSides,cube:!!cube,cubeBox:cube?(()=>{const r=(cube._domElement||cube.domElement).getBoundingClientRect(),h=host.getBoundingClientRect();return {top:r.top-h.top,right:h.right-r.right,w:r.width,h:r.height};})():null,controls:'camera-controls 3.1.2',
     three:THREE.REVISION,bvh:meshList.filter(m=>m.geometry.boundsTree).length,review:R?R.state():null})};

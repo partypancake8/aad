@@ -284,6 +284,9 @@ class Viewer:
             if isinstance(b, dict):
                 ok = b.get("ok", b.get("valid"))
                 st["build_ok"] = bool(ok) if ok is not None else None
+                for k in ("interference_pairs", "design_violations"):    # optional counts the status line shows
+                    if isinstance(b.get(k), int) and not isinstance(b.get(k), bool):
+                        st[k] = b[k]
         tp = self.tree_path()
         if tp and os.path.exists(tp):
             st["tree_mtime"] = os.path.getmtime(tp)

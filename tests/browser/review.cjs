@@ -8,7 +8,10 @@ const fs=require('node:fs'),path=require('node:path'),{spawnSync}=require('node:
 // list, pins.json, aad review); follow-up pins from a pin and from the part menu; a second packet; with --model,
 // two rebuilds after that packet still diff against the reviewed build (default choice, auto on rebuild and on
 // reload) and Unchanged here since your packet; layout at 1280 and 1600 px wide and a 300 px panel (nothing
-// clipped, touching or overflowing; screenshots of the Pins and Diff panels go to --shots DIR). Zero page errors.
+// clipped, touching or overflowing; screenshots of the Pins and Diff panels go to --shots DIR). Then the Pins
+// show/hide toggle, occluded and hidden-part pins, and the toolbar's left group at 1600 to 960 px: that check opens
+// the "good" version, which the harness titles "DEV | <a long name>" in the scratch versions.json, and writes a
+// build.json with counts beside it. Zero page errors.
 //   node tests/browser/review.cjs http://127.0.0.1:7904/ --project /tmp/x/proj --baseline good \
 //        --model /tmp/x/demo/bad/bracket_demo.glb --shots /tmp/x/shots
 // The test writes pins and packets into the project, so it refuses a --project outside a temp or scratch directory
@@ -56,7 +59,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  context=await browser.newContext({viewport:{width:1600,height:1050},...(VIDEO?{recordVideo:{dir:VIDEO,size:{width:1600,height:1050}}}:{})});
  await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:new URL(URL0).origin});
  const page=await context.newPage(),errors=[];
- page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push('console.error: '+m.text());});
+ page.on('pageerror',e=>{errors.push(e.message);if(process.env.DEBUG_ERR)console.error('PAGEERROR',e.message,e.stack);});page.on('console',m=>{if(m.type()==='error')errors.push('console.error: '+m.text());});
  await page.goto(URL0);
  await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});
  await page.waitForTimeout(1500);
@@ -759,6 +762,10 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await checkMeasureEntities(page,ok);
  await checkMeasureClear(page,ok);
  await checkPolish(X);
+ await checkPinsToggle(X);
+ await checkOccludedPins(X);
+ await checkLeftovers(X);
+ await checkToolbarFit(X);
  assert.deepEqual(errors,[],'no page errors');
  const srvLog=await page.evaluate(async()=>(await (await fetch(new URL('log.json',location.href))).json()).entries.filter(e=>e.level==='error').map(e=>e.msg));
  assert.deepEqual(srvLog.filter(m=>/ResizeObserver/.test(m)),[],'no ResizeObserver loop errors from the tab row');
@@ -1297,3 +1304,203 @@ async function checkPolish(X){
  if(X.shots)await page.locator('#panel').screenshot({path:path.join(X.shots,'revisions-more-keep.png')});
  ok('Stored builds to keep: 2 applied on the server and pruned, remembered in this browser, re-sent after a server reset, 0 refused');
 }
+
+// ======== Pins show/hide, occluded pins, toolbar left group (r7) ========
+// what of the pins the 3D view shows right now (markers, pinned-edge lines, repin old spots and trails, measurement labels)
+const pinView=page=>page.evaluate(()=>{
+  const shown=e=>e.isConnected&&getComputedStyle(e).display!=='none'&&e.getBoundingClientRect().width>0;
+  const rs=viewer.review.state();
+  return {markers:[...document.querySelectorAll('#labels .pin-marker:not(.draft)')].filter(shown).length,
+    edges:document.querySelectorAll('#edge-lines polyline.edge-line:not(.hover):not(.draft)').length,
+    old:[...document.querySelectorAll('#labels .pin-old')].filter(shown).length,trails:rs.repin.trails.length,
+    meas:[...document.querySelectorAll('#labels .measure-label')].filter(e=>e.isConnected&&getComputedStyle(e.closest('.measure-anchor')||e).display!=='none'&&e.getBoundingClientRect().width>0).length,
+    list:document.querySelectorAll('#pin-list li.item.pin').length,note:!document.getElementById('pins-hidden').hidden,
+    pressed:document.getElementById('pins-vis').getAttribute('aria-pressed'),icon:document.querySelector('#pins-vis .ic').className,
+    hp:viewer.state().hp,shown:rs.pinsShown,markersState:rs.markers};});
+const blurAll=page=>page.evaluate(()=>{if(document.activeElement&&document.activeElement!==document.body)document.activeElement.blur();});
+const settle=page=>page.waitForTimeout(600);
+const reloadReady=async page=>{await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});await page.waitForTimeout(900);};
+
+async function checkPinsToggle(X){
+  const {page,ok}=X;
+  await page.setViewportSize({width:1600,height:1050});
+  await page.locator('#tabs [data-tab=pins]').click();await page.locator('#modes [data-mode=select]').click();
+  const pinsFile=path.join(X.rd,'pins.json');await pause(800);
+  // a fresh measurement attached to an open point pin, that pin selected (its measurement shows), every category on screen
+  const MP=(await snapPins(page)).p.find(p=>p.kind==='point'&&p.status!=='resolved'&&!p.parent);assert(MP,'an open point pin');
+  await page.locator('#modes [data-mode=measure]').click();
+  await lookDown(page,[0,17.5,35],14);await page.waitForTimeout(300);
+  const [ma,mb]=await toClient(page,[[-12,15,35],[16,20,35]]);
+  await page.mouse.click(ma.x,ma.y);await page.waitForTimeout(200);await page.mouse.click(mb.x,mb.y);await page.waitForTimeout(800);
+  const mNew=(await snapMeas(page)).filter(m=>!m.pin).pop();assert(mNew,'a measurement to attach');
+  await page.locator(`#measure-list li[data-measure=${mNew.id}] select`).selectOption(MP.id);await page.waitForTimeout(300);
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  await page.locator(`#pin-list li[data-pin=${MP.id}] .note`).click();await settle(page);
+  await page.evaluate(()=>viewer.home());await settle(page);
+  const on=await pinView(page);
+  assert(on.markers>0&&on.edges>0&&on.old>0&&on.trails>0&&on.meas>0,'every kind of pin graphic is on screen first: '+JSON.stringify(on));
+  assert.equal(on.pressed,'true');assert.equal(on.note,false);
+  const title=await page.locator('#pins-vis').getAttribute('title');assert.match(title,/\(H\)/,'the button title names the H key');
+  assert.equal(await page.locator('#pins-vis').evaluate(b=>{const v=b.closest('[aria-label=View]'),ids=[...v.querySelectorAll('button')].map(x=>x.id);return ids.indexOf('pins-vis')===ids.indexOf('grid')+1;}),true,'Pins sits next to Grid');
+  const pins0=fs.readFileSync(pinsFile,'utf8');
+  // H hides every pin graphic in the view; the list stays, with the note; no undo step; pins.json untouched
+  await blurAll(page);await page.keyboard.press('h');await settle(page);
+  let off=await pinView(page);
+  assert.deepEqual([off.markers,off.edges,off.old,off.trails,off.meas],[0,0,0,0,0],'H hides markers, pinned edges, old spots, trails and attached measurements: '+JSON.stringify(off));
+  assert.equal(off.list,on.list,'the Pins list is unchanged');assert.equal(off.note,true,'the list says hidden in view');
+  assert.match(await page.locator('#pins-hidden').textContent(),/hidden in view/);
+  assert.equal(off.pressed,'false');assert.match(off.icon,/i-map-pin-off/);assert.equal(off.hp,on.hp,'not an undo step');
+  if(X.shots){await page.screenshot({path:path.join(X.shots,'pins-off.png')});}
+  // the button brings them all back
+  await page.locator('#pins-vis').click();await settle(page);
+  let back=await pinView(page);
+  assert.deepEqual([back.markers,back.edges,back.old,back.trails,back.meas],[on.markers,on.edges,on.old,on.trails,on.meas],'the toggle restores every graphic');
+  assert.equal(back.note,false);assert.equal(back.hp,on.hp);
+  if(X.shots){await page.screenshot({path:path.join(X.shots,'pins-on.png')});}
+  // remembered across a reload; the list note's Show turns them on
+  await page.locator('#pins-vis').click();await settle(page);
+  await reloadReady(page);
+  off=await pinView(page);assert.equal(off.shown,false,'hidden survives a reload');assert.equal(off.markers,0);assert.equal(off.edges,0);assert.equal(off.note,true);
+  await page.locator('#pins-show').click();await settle(page);
+  back=await pinView(page);assert.equal(back.shown,true);assert(back.markers>0,'Show brings the markers back');
+  // while hidden: Pin mode, a click on a list row (fly to) and Repin turn the pins back on
+  for(const [how,act] of [['Pin mode (P)',async()=>{await blurAll(page);await page.keyboard.press('p');}],
+    ['a list row',async()=>{await page.locator(`#pin-list li[data-pin=${MP.id}] .note`).click();}],
+    ['Pin mode button',async()=>{await page.locator('#modes [data-mode=pin]').click();}]]){
+    await page.locator('#modes [data-mode=select]').click();await blurAll(page);await page.keyboard.press('h');await settle(page);
+    assert.equal((await pinView(page)).shown,false);
+    await act();await settle(page);
+    const v=await pinView(page);assert.equal(v.shown,true,how+' turns the pins back on');assert(v.markers>0);
+  }
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  await pause(900);
+  assert.equal(fs.readFileSync(pinsFile,'utf8'),pins0,'the toggle never touches pins.json');
+  // Send packet draws the pins into its screenshot while they are hidden in the view
+  await blurAll(page);await page.keyboard.press('h');await settle(page);
+  const open=(await snapPins(page)).p.filter(p=>p.status!=='resolved').length;
+  const prev=(await X.rstate()).lastPacket?.packet;await page.locator('#send').click();
+  await page.waitForFunction(p=>viewer.review.state().lastPacket&&viewer.review.state().lastPacket.packet!==p,prev||null,{timeout:60000});
+  const pk=(await X.rstate()).lastPacket,pd=JSON.parse(fs.readFileSync(pk.packet,'utf8'));
+  assert(pd.screenshot_markers.length>0,'the packet screenshot has its pin markers while they are hidden in the view ('+pd.screenshot_markers.length+' of '+open+')');
+  await settle(page);off=await pinView(page);assert.equal(off.markers,0,'and the view stays hidden after the packet');assert.equal(off.edges,0);
+  await page.locator('#pins-vis').click();await settle(page);
+  ok(`Pins toggle: H and the button hide ${on.markers} markers, ${on.edges} pinned edges, ${on.old} old spots with trails and ${on.meas} attached measurement(s) and restore them; list stays with a note; no undo step; survives a reload; Pin mode, a list row and Show turn it on; pins.json unchanged; packet ${pd.id} still draws ${pd.screenshot_markers.length} markers`);
+}
+
+async function checkOccludedPins(X){
+  const {page,ok}=X;
+  await page.locator('#tabs [data-tab=pins]').click();await page.locator('#modes [data-mode=select]').click();
+  // look at a point pin's anchor from the front (along its normal) and from behind (the part's own body in between)
+  const look=(id,side)=>page.evaluate(([id,side])=>{
+    const p=viewer.review.snapshot().p.find(x=>x.id===id);let key=null;for(const [k,r] of viewer.nodes)if(r.leaf&&r.leaf.node===p.anchor.part.node){key=k;break;}
+    let m=null;viewer.nodes.get(key).obj.traverse(o=>{if(!m&&o.isMesh)m=o;});m.updateMatrixWorld();
+    const T=m.clone().position.fromArray(p.anchor.local).applyMatrix4(m.matrixWorld),n=p.anchor.normal_world;
+    const k=viewer.controls;k.enableDamping=false;k.setFocalOffset(0,0,0,false);
+    k.setLookAt(T.x+side*n[0]*400+0.01,T.y+side*n[1]*400+0.02,T.z+side*n[2]*400,T.x,T.y,T.z,false);k.update(0);viewer.commit();
+  },[id,side]);
+  const mk=id=>page.evaluate(id=>{const e=document.querySelector(`#labels .pin-marker[data-pin="${id}"]`);const cs=e&&getComputedStyle(e);
+    return e?{occ:e.classList.contains('occluded'),opacity:+cs.opacity,border:cs.borderTopStyle,shown:cs.display!=='none'}:null;},id);
+  const cands=(await snapPins(page)).p.filter(p=>p.kind==='point'&&p.status!=='resolved'&&p.anchor?.normal_world);
+  let P=null;
+  for(const c of cands){
+    await page.evaluate(()=>{viewer.clearSel();});
+    await look(c.id,1);await settle(page);const front=await mk(c.id);
+    await look(c.id,-1);await settle(page);const back=await mk(c.id);
+    const st=await X.rstate();
+    if(front&&back&&front.shown&&!front.occ&&back.occ&&st.occluded.includes(c.id)){P={pin:c,front,back};break;}
+  }
+  assert(P,'a point pin that is clear from the front and behind its part from the back');
+  assert(P.back.opacity<0.6&&P.back.border==='dashed','an occluded pin draws dimmed with a dashed ring: '+JSON.stringify(P.back));
+  assert(P.front.opacity===1&&P.front.border!=='dashed','from the front it is solid: '+JSON.stringify(P.front));
+  if(X.shots)await page.screenshot({path:path.join(X.shots,'pin-occluded.png')});
+  // the selected pin stays solid behind geometry
+  await page.locator(`#pin-list li[data-pin=${P.pin.id}] .note`).click();await settle(page);
+  await look(P.pin.id,-1);await settle(page);
+  const sel=await mk(P.pin.id);assert(sel&&!sel.occ&&sel.opacity===1,'the selected pin stays fully opaque: '+JSON.stringify(sel));
+  assert((await X.rstate()).occluded.includes(P.pin.id),'while the check still finds it behind geometry');
+  // its part hidden in the tree: the marker goes and the list row says part hidden; Show all brings both back
+  const key=await keyOfNode(page,P.pin.anchor.part.node);
+  await page.evaluate(k=>viewer.nodes.get(k).cb.click(),key);await settle(page);
+  let m=await mk(P.pin.id);assert(!m||!m.shown,'a hidden part hides its pin marker');
+  assert.equal(await page.locator(`#pin-list li[data-pin=${P.pin.id}] .chip.parthidden`).isVisible(),true,'the row says part hidden');
+  assert((await X.rstate()).partHidden.includes(P.pin.id));
+  await page.locator('#showall').click();await settle(page);
+  m=await mk(P.pin.id);assert(m&&m.shown,'Show all brings the marker back');
+  assert.equal(await page.locator(`#pin-list li[data-pin=${P.pin.id}] .chip.parthidden`).isVisible(),false);
+  // isolating another part hides it too
+  const other=[...(await page.evaluate(()=>[...viewer.nodes].filter(([,r])=>r.leaf).map(([k])=>k)))].find(k=>k!==key);
+  await page.evaluate(k=>{for(const [kk,r] of viewer.nodes)if(r.leaf&&kk!==k&&r.cb&&r.cb.checked)r.cb.click();},other);await settle(page);
+  m=await mk(P.pin.id);assert(!m||!m.shown,'isolating another part hides the pin');
+  await page.locator('#showall').click();await settle(page);
+  ok(`occluded pins: ${P.pin.id} solid from the front, dimmed and dashed from behind (opacity ${P.back.opacity}), solid while selected; hidden or isolated-away part hides it with "part hidden"`);
+}
+
+
+// small leftovers (r7): the pin card's location line keeps numbers whole; Revisions rows count parts in good English
+async function checkLeftovers(X){
+  const {page,ok}=X;
+  await page.locator('#tabs [data-tab=pins]').click();await page.locator('#modes [data-mode=select]').click();
+  // the edge or point card's location line keeps numbers and the coordinate triple whole
+  await page.evaluate(()=>viewer.home());await page.waitForTimeout(600);
+  const PA=await pointOn(page,X.A.key);await page.locator('#modes [data-mode=pin]').click();await page.mouse.click(PA.x,PA.y);
+  await page.locator('#pin-dialog').waitFor({state:'visible'});
+  const flds=await page.locator('#pin-where .fld').evaluateAll(fs=>fs.map((f,i)=>({i,t:f.textContent,lines:f.getClientRects().length})));
+  assert(flds.length>=2&&flds.slice(1).every(f=>f.lines===1),'each coordinate field stays on one line: '+JSON.stringify(flds));
+  assert.match(flds[1].t,/^local -?\d+\.\d, -?\d+\.\d, -?\d+\.\d mm$/);
+  await page.locator('#pin-close').click();await page.locator('#modes [data-mode=select]').click();
+  // Revisions rows count parts in good English
+  await page.locator('#tabs [data-tab=diff]').click();await page.waitForTimeout(1500);
+  const subs=await page.locator('#rev-list .sub').allTextContents();
+  assert(subs.some(t=>/parts? differs? from now/.test(t)),'a Revisions row counts differing parts: '+JSON.stringify(subs));
+  for(const t of subs)assert(!/\b1 parts\b|\b1 part differ\b|\b(?:[02-9]|\d\d+) parts? differs\b/.test(t),'plural agreement: '+t);
+  await page.locator('#tabs [data-tab=pins]').click();
+  ok(`leftovers: card fields ${JSON.stringify(flds.map(f=>f.t))} unbroken; revisions "${subs.find(t=>/differ/.test(t))}"`);
+}
+
+// the toolbar's left group: DEV badge, a long model name and a long build status at 1600, 1280, 1100 and 960 px
+async function checkToolbarFit(X){
+  const {page,ok}=X;
+  const goodDir=path.join(path.dirname(path.dirname(MODEL)),'good'),bj=path.join(goodDir,'build.json');
+  assert(MODEL&&fs.existsSync(goodDir),'the toolbar check needs --model inside a scratch copy of the bracket demo');
+  fs.writeFileSync(bj,JSON.stringify({ok:true,interference_pairs:0,design_violations:28}));
+  const u=new URL('v/good/',URL0).href;
+  try{
+    await page.setViewportSize({width:1600,height:900});
+    await page.goto(u);await page.waitForFunction(()=>window.viewer?.state().ready,null,{timeout:120000});
+    await page.waitForFunction(()=>/build ok, 0 interferences, 28 design violations/.test(viewer.state().status),null,{timeout:15000});
+    const t=await page.locator('#title').getAttribute('title');
+    assert(/^DEV \| .{40,}/.test(t||''),`the "good" version is titled "DEV | <long name>" by the harness (got ${t})`);
+    assert.equal(await page.locator('#envbadge').isVisible(),true,'DEV badge');
+    const fits=[];
+    for(const [pg,W] of [...[1600,1280,1100,960].map(w=>['good',w]),...[1600,1280,1100,960].map(w=>['main',w])]){
+      if(pg==='main'&&!(await page.evaluate(()=>!!window.viewer?.review))){await page.goto(URL0);await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});}
+      await page.setViewportSize({width:W,height:900});await page.waitForTimeout(500);
+      const r=await page.evaluate(()=>{
+        const R=e=>e.getBoundingClientRect(),vis=e=>!e.hidden&&getComputedStyle(e).display!=='none'&&R(e).width>0&&R(e).height>0;
+        const bad=[],top=document.getElementById('top'),brand=document.getElementById('brand'),tr=R(top),br=R(brand);
+        const parts=['envbadge','title','status'].map(id=>document.getElementById(id)).filter(vis);
+        const boxes=[...[...top.children].filter(e=>vis(e)&&e!==brand),...parts].map(e=>[e.id||e.getAttribute('aria-label')||e.className,R(e)]);
+        for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++){const [na,a]=boxes[i],[nb,b]=boxes[j];
+          if(a.left<b.right-0.5&&b.left<a.right-0.5&&a.top<b.bottom-0.5&&b.top<a.bottom-0.5)bad.push(`${na} overlaps ${nb}`);}
+        for(const [n,r] of boxes)if(r.left<tr.left-0.5||r.right>tr.right+0.5)bad.push('outside the toolbar: '+n);
+        for(const p of parts){const r=R(p);if(r.left<br.left-0.5||r.right>br.right+0.5||r.top<br.top-0.5||r.bottom>br.bottom+0.5)bad.push('clipped by its group: '+p.id);}
+        for(const e of [...top.querySelectorAll('button')].filter(vis)){const r=R(e),h=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+          if(!h||!e.contains(h))bad.push('button covered: '+(e.id||e.textContent.trim()));}
+        const bd=document.getElementById('envbadge'),bdr=R(bd),hb=document.elementFromPoint(bdr.left+bdr.width/2,bdr.top+bdr.height/2);
+        if(window.viewer.review?false:(!vis(bd)||bd.scrollWidth>bd.clientWidth+0.5||bdr.left<br.left||bdr.right>br.right||hb!==bd))bad.push('badge not fully visible');
+        const st=document.getElementById('status'),first=document.querySelector('#modes button');
+        if(vis(st)&&R(st).right>R(first).left-0.5)bad.push(`status right ${R(st).right.toFixed(1)} not left of Select ${R(first).left.toFixed(1)}`);
+        if(vis(st)&&st.scrollWidth>st.clientWidth+0.5&&!getComputedStyle(st).textOverflow.includes('ellipsis'))bad.push('status cut without an ellipsis');
+        const ti=document.getElementById('title');if(R(ti).width<60)bad.push('title collapsed: '+R(ti).width.toFixed(1));
+        if(!st.title.includes(st.dataset.full))bad.push('status tooltip lacks the full line');
+        return {bad,fit:+brand.dataset.fit,status:vis(st)?st.textContent:null,titleW:Math.round(R(ti).width),titleCut:ti.scrollWidth>ti.clientWidth+0.5};});
+      assert.deepEqual(r.bad,[],`toolbar left group at ${W} px (${pg})`);
+      if(r.fit<2)assert.equal(r.titleCut,false,`the name is only cut after the status is gone (${W} px, ${pg})`);
+      fits.push([pg,W,r.fit,r.status,r.titleW]);
+      if(X.shots)await page.locator('#top').screenshot({path:path.join(X.shots,`toolbar-${pg}-${W}.png`)});
+    }
+    assert(fits.every((f,i)=>i===0||f[0]!==fits[i-1][0]||f[2]>=fits[i-1][2]),'narrower windows never step back: '+JSON.stringify(fits));
+    ok('toolbar left group with DEV, a long name and a long status: no overlaps or clipping, badge and buttons whole, status ends before Select at '+JSON.stringify(fits));
+  }finally{fs.rmSync(bj,{force:true});await page.setViewportSize({width:1600,height:1050});await page.goto(URL0);await page.waitForFunction(()=>window.viewer?.state().ready,null,{timeout:120000});}
+}
+
