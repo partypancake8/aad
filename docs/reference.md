@@ -28,8 +28,9 @@ and the review files on disk.
     aad review resolve <pin id or number> [--project DIR]
     aad review tour-template [--project DIR]
 
-- `aad review` prints the open pins (Not fixed first, with orphan flags and follow-up parents), the scope lock,
-  the diff baseline, the latest diff with its collateral and warnings, the camera and selection, the latest
+- `aad review` prints the open pins in review order (Not fixed and repinned first, then problems, change
+  requests and notes, with orphan flags and follow-up parents), the scope lock, keep pins whose surroundings
+  changed (`KEEP PIN CHANGED`, `keep_changed` in JSON), the diff baseline, the latest diff with its collateral and warnings, the camera and selection, the latest
   packets, the tour and the issue counts. `--json` gives the same as one object.
 - `aad review diff` with no files compares the current build against the build your last packet was sent
   against, or the previous build when no packet was sent. The first line says which baseline was used
@@ -125,7 +126,7 @@ against `aad/review/schemas/` before it is written.
 | `current.json` | the build the viewer shows: name, files, build id, part names |
 | `diff.json` | the latest diff the viewer or the CLI computed |
 | `history.jsonl` | pin events, for the per-class issue counts |
-| `baselines/<id>/` | copies of earlier builds (newest 3) plus the builds the newest 3 packets were sent against |
+| `baselines/<id>/` | copies of earlier builds (newest 10, `AAD_KEEP_BUILDS` sets 1 to 50) plus the builds the newest 3 packets were sent against |
 | `packets/<time>/` | `packet.json` and `view.png` from each Send packet |
 
 Add `baselines/` and `packets/` to `.gitignore`. Pins and the scope lock are yours to commit or not.
@@ -149,13 +150,20 @@ Add `baselines/` and `packets/` to `.gitignore`. Pins and the scope lock are you
 - `note` is optional. `aad review` and packets add `reason` (the note, or the class meaning when the note is
   empty) and `class_meaning`.
 - `not_fixed` pins carry `attempts` and `escalated_build`; follow-up pins carry `parent`.
+- A repinned pin keeps its id, gets the new anchor, class and note, `attempts` + 1 and `repinned_at`, and its
+  previous state is appended to `history` (time, build, anchor, class, note, status).
 
 ### Issue classes
 
-`weird_geometry`, `incoherent_addition`, `collateral_damage`, `floating_unsupported`, `orientation_mirror`,
-`fit_clearance`, `printability`, `holes_ports_blocked`, `fasteners_assembly`, `regression`, `belt_pulley`,
-`envelope_size`, `intent_misread`, `other`. Each has a label, a hint and a one-sentence `meaning` written as an
-instruction to an agent, in `aad/review/issue_classes.json`.
+Each class has a group, a label, a hint and a one-sentence `meaning` written as an instruction to an agent, in
+`aad/review/issue_classes.json`. The pin card shows them in this order:
+
+| Group | Classes |
+|---|---|
+| Change request | `design_change`, `appearance`, `resize`, `move`, `add_feature`, `remove_feature`, `simplify`, `lighten`, `strengthen` |
+| Problem | `weird_geometry`, `incoherent_addition`, `collateral_damage`, `floating_unsupported`, `orientation_mirror`, `fit_clearance`, `printability`, `holes_ports_blocked`, `fasteners_assembly`, `regression`, `belt_pulley`, `envelope_size`, `intent_misread` |
+| Note to the agent | `question` (answer only, change nothing), `keep` (locked: geometry changed within 5 mm is flagged, even inside the scope lock), `reference` (an example to match) |
+| Other | `other` |
 
 ### The diff
 
@@ -178,6 +186,7 @@ The viewer binds 127.0.0.1 only. The page uses these routes, and scripts can too
 | `GET /models.json`, `/models/<n>` | the loaded files and their bytes |
 | `GET /status.json` | change signature, polled every 2 s by the page |
 | `GET /tree.json`, `/views.json` | the part tree and camera buttons |
+| `GET /part-stats.json` | per-part volume, area, box, triangle count and closed-shell flag (weight estimate, Part info) |
 | `GET /review/state.json` | pins, scope, tour, issue classes, baselines, latest diff |
 | `GET /review/diff.json?against=ID` | diff against a baseline (`reviewed`, `previous`, a build or version id) |
 | `GET /review/pin-changes.json` | for each pin of the last packet, whether anything near it changed |

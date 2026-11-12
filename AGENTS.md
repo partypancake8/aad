@@ -10,24 +10,29 @@ person reviewing runs `aad view` on that GLB.
 The reviewer marks problems in the aad viewer. Their review state is in `.cadreview/` at the project root.
 
 1. At the start of every CAD turn run `aad review --json` (add `--project DIR` if you are not inside the
-   project). Read `open_pins`, `scope`, `baseline` and `diff`. If the reviewer sent a packet, also look at its
-   `view.png`: the pins are numbered on it.
+   project). Read `open_pins`, `scope`, `keep_changed`, `baseline` and `diff`. If the reviewer sent a packet,
+   also look at its `view.png`: the pins are numbered on it.
 2. A pin with no note is complete. Its issue class is the reason, and `reason` / `class_meaning` in the JSON
    spell out what the class asks for. Do not ask for a note.
-3. Only parts in the scope lock may change. If a pin sits on a part outside the scope, say so in your reply
+3. Pins come in review order. Work on `not_fixed` and repinned pins first: the last attempt did not fix them,
+   so do not try the same approach again. A repinned pin has a new spot and keeps its earlier spots and notes
+   in `history`; read the new anchor and reason, not the old one. Then problems, then change requests.
+4. Question pins (`instruction`: "answer only, change nothing") get an answer in your reply and no geometry
+   change. Keep pins (`instruction`: "locked by the user") are locked: nothing within 5 mm of them may change,
+   even inside the scope lock. Reference pins are an example to match elsewhere.
+5. Only parts in the scope lock may change. If a pin sits on a part outside the scope, say so in your reply
    and leave that part alone. Never reinterpret it as a pin on some other part.
-4. Work on `not_fixed` pins first (they are listed first, with an `escalation` line). The last attempt did not
-   fix them, so do not try the same approach again. Re-read the pin and compare against the reviewed baseline.
-5. A `regression` pin means something that was right before is broken again. Find the revision where it was
+6. A `regression` pin means something that was right before is broken again. Find the revision where it was
    right, restore that geometry, and keep the later changes the reviewer asked for.
-6. After the build, run `aad review diff`. It compares against the build the reviewer last looked at. Explain
-   every part it lists as COLLATERAL (changed outside the scope lock) or fix it, and mention any detector
-   warning (thin wall, new loose shell, sliver triangles, part no longer touching anything).
-7. Write a change tour: `aad review tour-template > .cadreview/tour.json`, then fill in one note per stop
-   saying what changed and why. The reviewer accepts or rejects each stop in the viewer.
-8. Never resolve, delete or edit the reviewer's pins, and never edit their scope lock. Resolving is their call
+7. After the build, run `aad review diff`. It compares against the build the reviewer last looked at. Explain
+   every part it lists as COLLATERAL (changed outside the scope lock), and every KEEP PIN CHANGED line that
+   `aad review` prints, or fix them, and mention any detector warning (thin wall, new loose shell, sliver triangles, part no longer
+   touching anything).
+8. Write a change tour: `aad review tour-template > .cadreview/tour.json`, then fill in one note per stop
+   saying what changed and why. The reviewer accepts, rejects or repins each stop in the viewer.
+9. Never resolve, delete or edit the reviewer's pins, and never edit their scope lock. Resolving is their call
    (`aad review resolve` exists for when they ask you to).
-9. Never loosen a check, tolerance or test to make a build pass. If a check fails, fix the model or report it.
+10. Never loosen a check, tolerance or test to make a build pass. If a check fails, fix the model or report it.
 ```
 
 ## Why each rule is there
@@ -36,11 +41,13 @@ The reviewer marks problems in the aad viewer. Their review state is in `.cadrev
   normal in the part's own coordinates, the edge polyline for an edge pin, and the camera the reviewer used.
 - Rule 2 exists because reviewers stop writing notes once the class chips are fast. The class meanings in
   `aad/review/issue_classes.json` are written as instructions.
-- Rule 3 is the core of the scope lock. A pin on a locked part is information for the reviewer, not
-  permission to move the fix somewhere else.
-- Rules 4 and 5 stop the loop where an agent repeats the same fix, or undoes newer work while restoring an
+- Rules 3 and 6 stop the loop where an agent repeats the same fix, or undoes newer work while restoring an
   older one.
-- Rule 6 is what makes collateral damage visible before the reviewer finds it by eye.
-- Rule 7 gives the reviewer an ordered list of what you changed to accept or reject, instead of a diff to
+- Rule 4 exists because not every pin is a request to change something. A question asked on a pin is not
+  permission to edit there, and a keep pin is the reviewer saying a spot is finally right.
+- Rule 5 is the core of the scope lock. A pin on a locked part is information for the reviewer, not
+  permission to move the fix somewhere else.
+- Rule 7 is what makes collateral damage visible before the reviewer finds it by eye.
+- Rule 8 gives the reviewer an ordered list of what you changed to accept or reject, instead of a diff to
   search through.
-- Rules 8 and 9 keep the review state and the checks honest.
+- Rules 9 and 10 keep the review state and the checks honest.
