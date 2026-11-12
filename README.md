@@ -1,6 +1,6 @@
 # aad
 
-<p align="center"><img src="docs/media/hero.png" width="900" alt="The aad viewer with a turntable assembly open, numbered pins on the model, the view cube in the corner and the Pins panel on the right"></p>
+<p align="center"><img src="docs/media/hero.png" width="900" alt="The aad viewer with a turntable drum assembly open, numbered pins on the faceplate and the drum base, the view cube in the corner and the Pins panel on the right"></p>
 
 **agent aided design.** A local review workspace for CAD that coding agents write.
 
@@ -56,7 +56,7 @@ vendored. It reads any GLB (and STL or PLY), runs on 127.0.0.1 and makes no netw
 <td align="center"><img src="docs/media/pin-card.png" width="440" alt="The pin card on the bracket demo with a note typed and the class chips in four groups"><br><sub>The pin card: change requests, problems, notes to the agent. The note is optional.</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="docs/media/scope-diff.png" width="440" alt="Revisions tab comparing the current build with what was reviewed, changed parts tinted and the old geometry as a green hologram"><br><sub>Since your last packet: two parts changed outside the scope lock, the old shape in green.</sub></td>
+<td align="center"><img src="docs/media/scope-diff.png" width="440" alt="Revisions tab on a dark background comparing the current build with what was reviewed, the old geometry of the changed parts drawn as a green hologram over the current model"><br><sub>Since your last packet: two parts changed outside the scope lock, their old shape as a green hologram.</sub></td>
 <td align="center"><img src="docs/media/tour.png" width="440" alt="Tour tab with the agent's stops and Accept, Reject and Repin buttons"><br><sub>The agent's change tour. Each stop flies to its parts; accept, reject or repin.</sub></td>
 </tr>
 <tr>
