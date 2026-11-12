@@ -447,9 +447,45 @@ def make_handler(V, versions=None):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
+
+        # ---- local-only guard (every route): the viewer listens on 127.0.0.1, but a web page open in the same
+        # browser can still send it requests. A Host that is not this loopback address and port is refused (DNS
+        # rebinding), and a write must be a JSON request from this page's own origin (a cross-site form or
+        # text/plain POST is refused). No CORS headers are ever sent, so other origins cannot read responses.
+        def _refuse(self, why):
+            self.close_connection = True
+            self._send(403, (why + "\n").encode(), "text/plain; charset=utf-8")
+            return False
+
+        def _allowed(self):
+            port = self.server.server_address[1]
+            hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+            host = (self.headers.get("Host") or "").strip().lower()
+            if host not in hosts:
+                return self._refuse("forbidden: this viewer only answers requests for 127.0.0.1, localhost or [::1] "
+                                    "on its own port")
+            if self.command in ("POST", "PUT", "DELETE", "PATCH"):
+                ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if ctype != "application/json":
+                    return self._refuse("forbidden: writes must be Content-Type: application/json")
+                origin = self.headers.get("Origin")
+                if origin is not None and origin.strip().lower() not in {"http://" + h for h in hosts}:
+                    return self._refuse("forbidden: cross-origin write")
+                site = self.headers.get("Sec-Fetch-Site")
+                if site is not None and site.strip().lower() not in ("same-origin", "none"):
+                    return self._refuse("forbidden: cross-site write")
+            return True
+
+        def do_PUT(self):
+            if self._allowed():
+                self._json(405, dict(error="only GET and POST"))
+
+        do_DELETE = do_PATCH = do_PUT
 
         def _json(self, code, obj):
             self._send(code, json.dumps(obj).encode(), "application/json")
@@ -492,6 +528,8 @@ def make_handler(V, versions=None):
             return self._json(code, obj)
 
         def do_GET(self):
+            if not self._allowed():
+                return
             V, path = self._route()
             if V is None:
                 return
@@ -556,6 +594,8 @@ def make_handler(V, versions=None):
             return json.loads(self.rfile.read(n) or b"{}")
 
         def do_POST(self):
+            if not self._allowed():
+                return
             V, path = self._route()
             if V is None:
                 return
