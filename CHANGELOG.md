@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Edge pins on a rebuilt model: the stored edge is matched against the part's current feature edges (within
+  0.3 mm, lengths within 5 percent). A match draws the current edge; when the edge is gone the card says "The
+  pinned edge changed since this pin was made", the selected pin draws the old edge thin and dashed as "edge as
+  pinned" (Show old edge on its card), and `aad review` text and JSON report `edge_changed`.
+- Pin markers that would overlap fan out on an arc with leaders to their points; a pin whose edge is a small
+  closed loop (a screw head) moves its marker off the loop. Edge lines draw under the markers.
+- Pins behind other geometry keep a fully opaque white number: only the fill dims, with a dashed ring, a title
+  that says why, and the same dashed treatment on the pin's edge line. Options: Dim pins behind geometry.
+- Resizable panes: drag the dividers beside the view (left 200 to 520 px, right 300 to 720 px, the view keeps
+  360 px), arrow keys on a focused divider, double-click to reset, a divider under the part tree, and a chevron
+  or the `,` and `.` keys to collapse a panel to a rail. Remembered in the browser.
 - Pins toggle in the toolbar (H): hides every pin marker, pinned edge, repin trail and attached measurement in
   the view and brings them back. View state only, remembered in the browser, never an undo step or a change to
   pins.json; Pin mode, dropping or repinning a pin and flying to one turn it back on, and Send packet always

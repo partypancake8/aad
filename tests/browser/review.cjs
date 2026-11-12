@@ -765,6 +765,9 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await checkPinsToggle(X);
  await checkOccludedPins(X);
  await checkLeftovers(X);
+ await checkStaleEdgePins(X);
+ await checkFanOut(X);
+ await checkPanes(X);
  await checkToolbarFit(X);
  assert.deepEqual(errors,[],'no page errors');
  const srvLog=await page.evaluate(async()=>(await (await fetch(new URL('log.json',location.href))).json()).entries.filter(e=>e.level==='error').map(e=>e.msg));
@@ -894,8 +897,8 @@ async function checkKeepPinIsALock(X){
 async function checkMarkerColours(X){
   const {page}=X;
   const r=await page.evaluate(()=>{
-    const rgb=c=>{const m=c.match(/[\d.]+/g).map(Number);return m.slice(0,3);};
-    const out={};for(const g of ['change_request','problem','note']){const e=document.querySelector(`.pin-marker.g-${g}:not(.orphan)`);
+    const rgb=c=>{const m=c.replace(/^color\(srgb/,'').match(/[\d.]+/g).map(Number);return /^color\(/.test(c)?m.slice(0,3).map(v=>v*255):m.slice(0,3);};
+    const out={};for(const g of ['change_request','problem','note']){const e=document.querySelector(`.pin-marker.g-${g}:not(.orphan):not(.occluded)`)||document.querySelector(`.pin-marker.g-${g}:not(.orphan)`);
       if(e){const cs=getComputedStyle(e);out[g]={fill:rgb(cs.backgroundColor),text:rgb(cs.color),ring:rgb(cs.borderTopColor),ringW:parseFloat(cs.borderTopWidth)};}}
     out.bgs=[...document.querySelectorAll('#bg-presets [data-bg] .sw')].map(s=>({name:s.parentElement.dataset.bg,c:rgb(getComputedStyle(s).backgroundColor)}));
     return out;});
@@ -1399,7 +1402,8 @@ async function checkOccludedPins(X){
     k.setLookAt(T.x+side*n[0]*400+0.01,T.y+side*n[1]*400+0.02,T.z+side*n[2]*400,T.x,T.y,T.z,false);k.update(0);viewer.commit();
   },[id,side]);
   const mk=id=>page.evaluate(id=>{const e=document.querySelector(`#labels .pin-marker[data-pin="${id}"]`);const cs=e&&getComputedStyle(e);
-    return e?{occ:e.classList.contains('occluded'),opacity:+cs.opacity,border:cs.borderTopStyle,shown:cs.display!=='none'}:null;},id);
+    const bg=cs.backgroundColor,am=bg.match(/\/\s*([\d.]+)\s*\)$/)||bg.match(/^rgba\([^)]*,\s*([\d.]+)\)$/);
+    return e?{occ:e.classList.contains('occluded'),opacity:+cs.opacity,border:cs.borderTopStyle,shown:cs.display!=='none',alpha:am?+am[1]:1,color:cs.color,title:e.title}:null;},id);
   const cands=(await snapPins(page)).p.filter(p=>p.kind==='point'&&p.status!=='resolved'&&p.anchor?.normal_world);
   let P=null;
   for(const c of cands){
@@ -1410,7 +1414,10 @@ async function checkOccludedPins(X){
     if(front&&back&&front.shown&&!front.occ&&back.occ&&st.occluded.includes(c.id)){P={pin:c,front,back};break;}
   }
   assert(P,'a point pin that is clear from the front and behind its part from the back');
-  assert(P.back.opacity<0.6&&P.back.border==='dashed','an occluded pin draws dimmed with a dashed ring: '+JSON.stringify(P.back));
+  // r8: the number stays fully opaque and white, only the fill dims (to about 70 percent), with a dashed ring and a title
+  assert(P.back.opacity===1&&P.back.border==='dashed'&&P.back.alpha>0.6&&P.back.alpha<0.8&&P.back.color==='rgb(255, 255, 255)','an occluded pin dims only its fill, dashed ring, white number: '+JSON.stringify(P.back));
+  assert.match(P.back.title,/behind other geometry from this view/,'its title says why');
+  assert.doesNotMatch(P.front.title,/behind other geometry/);
   assert(P.front.opacity===1&&P.front.border!=='dashed','from the front it is solid: '+JSON.stringify(P.front));
   if(X.shots)await page.screenshot({path:path.join(X.shots,'pin-occluded.png')});
   // the selected pin stays solid behind geometry
@@ -1418,6 +1425,30 @@ async function checkOccludedPins(X){
   await look(P.pin.id,-1);await settle(page);
   const sel=await mk(P.pin.id);assert(sel&&!sel.occ&&sel.opacity===1,'the selected pin stays fully opaque: '+JSON.stringify(sel));
   assert((await X.rstate()).occluded.includes(P.pin.id),'while the check still finds it behind geometry');
+  // an occluded edge pin: its edge highlight is dashed and dimmed like its marker, and solid when it is not occluded
+  await page.evaluate(()=>viewer.clearSel());
+  const edgeLines=id=>page.evaluate(id=>[...document.querySelectorAll(`#edge-lines polyline.edge-line[data-pin="${id}"]`)].map(l=>l.classList.contains('occluded')),id);
+  // look at each open edge pin from both sides of its point: whenever the check counts it as behind geometry its
+  // marker and its edge line are both dimmed and dashed, and neither is when it is not
+  const edgeState=id=>page.evaluate(id=>{const e=document.querySelector(`#labels .pin-marker[data-pin="${id}"]`);
+    return {occ:viewer.review.state().occluded.includes(id),marker:!!e&&e.classList.contains('occluded'),
+      lines:[...document.querySelectorAll(`#edge-lines polyline.edge-line[data-pin="${id}"]`)].map(l=>l.classList.contains('occluded'))};},id);
+  const seen=[];
+  for(const c of (await snapPins(page)).p.filter(p=>p.kind==='edge'&&p.status!=='resolved'&&p.anchor?.normal_world))
+    for(const side of [-1,1]){await look(c.id,side);await settle(page);const e=await edgeState(c.id);if(e.lines.length)seen.push({id:c.id,side,...e});}
+  assert(seen.some(e=>e.occ),'an open edge pin seen behind geometry: '+JSON.stringify(seen));
+  for(const e of seen)assert(e.marker===e.occ&&e.lines.every(x=>x===e.occ),'marker and edge line agree with the check: '+JSON.stringify(e));
+  const EP={id:seen.find(e=>e.occ).id};
+  // Options: Dim pins behind geometry turns it off (remembered across a reload) and back on
+  await look(P.pin.id,-1);await page.evaluate(()=>viewer.clearSel());
+  await page.locator('#options').click();await page.locator('#opt-dim-occluded').uncheck();await settle(page);
+  let dm=await mk(P.pin.id);assert(dm&&!dm.occ&&dm.alpha===1&&dm.border!=='dashed','off: no dimming');
+  assert.deepEqual((await X.rstate()).occluded,[],'off: nothing counts as occluded');
+  await page.keyboard.press('Escape');await reloadReady(page);await look(P.pin.id,-1);await settle(page);
+  assert.equal(await page.locator('#opt-dim-occluded').isChecked(),false,'the choice survives a reload');
+  dm=await mk(P.pin.id);assert(dm&&!dm.occ,'still not dimmed after the reload');
+  await page.locator('#options').click();await page.locator('#opt-dim-occluded').check();await page.keyboard.press('Escape');await settle(page);await look(P.pin.id,-1);await settle(page);
+  dm=await mk(P.pin.id);assert(dm&&dm.occ,'on again: dimmed again');
   // its part hidden in the tree: the marker goes and the list row says part hidden; Show all brings both back
   const key=await keyOfNode(page,P.pin.anchor.part.node);
   await page.evaluate(k=>viewer.nodes.get(k).cb.click(),key);await settle(page);
@@ -1432,7 +1463,7 @@ async function checkOccludedPins(X){
   await page.evaluate(k=>{for(const [kk,r] of viewer.nodes)if(r.leaf&&kk!==k&&r.cb&&r.cb.checked)r.cb.click();},other);await settle(page);
   m=await mk(P.pin.id);assert(!m||!m.shown,'isolating another part hides the pin');
   await page.locator('#showall').click();await settle(page);
-  ok(`occluded pins: ${P.pin.id} solid from the front, dimmed and dashed from behind (opacity ${P.back.opacity}), solid while selected; hidden or isolated-away part hides it with "part hidden"`);
+  ok(`occluded pins: ${P.pin.id} solid from the front, from behind fill ${P.back.alpha} with a dashed ring and a white number, solid while selected; edge highlight ${EP?'matches its marker ('+EP.id+')':'(no occluded edge pin found)'}; Options Dim pins behind geometry off and on, remembered; hidden or isolated-away part hides it with "part hidden"`);
 }
 
 
@@ -1456,6 +1487,170 @@ async function checkLeftovers(X){
   await page.locator('#tabs [data-tab=pins]').click();
   ok(`leftovers: card fields ${JSON.stringify(flds.map(f=>f.t))} unbroken; revisions "${subs.find(t=>/differ/.test(t))}"`);
 }
+
+// stale edge pins (r8): an edge pin made on another build is re-matched against the part's current feature edges.
+// The same edge matches and draws as usual; an edge that is gone draws only as a thin dashed "edge as pinned" for the
+// selected pin (Show old edge on its card), its card says the pinned edge changed, aad review says edge_changed.
+async function checkStaleEdgePins(X){
+  const {page,ok}=X;
+  await page.locator('#tabs [data-tab=pins]').click();await page.locator('#modes [data-mode=select]').click();
+  const pinsFile=path.join(X.rd,'pins.json'),doc=JSON.parse(fs.readFileSync(pinsFile,'utf8'));
+  const base=doc.pins.find(p=>p.anchor&&p.anchor.part.node===X.A.node)||doc.pins.find(p=>p.anchor);assert(base,'a pin with an anchor to copy the part from');
+  const key=await keyOfNode(page,base.anchor.part.node);
+  const rec=(await page.evaluate(k=>viewer.edgeChains(k),key)).sort((a,b)=>b.length_mm-a.length_mm)[0];assert(rec&&rec.length_mm>5,'a feature edge of the part');
+  const mk=(n,edge,note)=>({...JSON.parse(JSON.stringify(base)),id:'p'+n,n,kind:'edge',status:'open',note,parent:undefined,history:undefined,measure:null,
+    edge,build:'feedc0ffee00',repinned_build:undefined,repinned_at:undefined,created:'2026-11-12T03:28:47Z',
+    anchor:{...base.anchor,local:rec.midpoint}});
+  const n1=doc.next,n2=doc.next+1,S1='p'+n1,S2='p'+n2,shift=q=>[q[0]+3,q[1]+3,q[2]];
+  const gone={...rec,points:rec.points.map(shift),start:shift(rec.start),end:shift(rec.end),midpoint:shift(rec.midpoint),length_mm:+(rec.length_mm*1.2).toFixed(4)};
+  doc.pins.push(mk(n1,rec,'same edge, older build'),mk(n2,gone,'edge that is gone'));doc.next=n2+1;
+  fs.writeFileSync(pinsFile,JSON.stringify(doc,null,1));
+  try{
+    await reloadReady(page);await page.evaluate(()=>viewer.home());await settle(page);
+    const ps=(await X.rstate()).pins,q1=ps.find(p=>p.id===S1),q2=ps.find(p=>p.id===S2);
+    assert(q1&&q2,'both test edge pins load');
+    assert.equal(q1.edgeChanged,false,'the same edge on an older build re-matches');assert.equal(q2.edgeChanged,true,'a moved, longer edge does not');
+    const lines=id=>page.evaluate(id=>[...document.querySelectorAll(`#edge-lines polyline.edge-line[data-pin="${id}"]`)].map(l=>({stale:l.classList.contains('stale'),dash:getComputedStyle(l).strokeDasharray,w:parseFloat(getComputedStyle(l).strokeWidth)})),id);
+    const l1=await lines(S1);assert(l1.length>0&&l1.every(l=>!l.stale),'the re-matched edge draws as a live highlight: '+JSON.stringify(l1));
+    assert.equal((await lines(S2)).length,0,'the gone edge is not drawn while its pin is not selected');
+    const msg=await page.locator(`#pin-list li[data-pin=${S2}] .edge-stale`).textContent();
+    assert.match(msg,/^The pinned edge changed since this pin was made \(pinned (\w+ \d+ )?\d\d:\d\d, model rebuilt (\w+ \d+ )?\d\d:\d\d\)$/,'the card says the edge changed: '+msg);
+    assert.equal(await page.locator(`#pin-list li[data-pin=${S1}] .edge-stale`).count(),0,'not on the re-matched pin');
+    assert.equal(await page.locator(`#pin-list li[data-pin=${S2}] label.old-edge input`).isChecked(),false,'Show old edge is off for a pin that is not selected');
+    assert.match(await page.locator(`.pin-marker[data-pin=${S2}]`).getAttribute('title'),/The pinned edge changed since this pin was made/);
+    await page.locator(`#pin-list li[data-pin=${S2}] .note`).click();await settle(page);
+    const l2=await lines(S2);
+    assert(l2.length>0&&l2.every(l=>l.stale&&l.dash!=='none'&&l.w<3),'selected: the old edge draws thin and dashed: '+JSON.stringify(l2));
+    assert.equal(await page.locator(`#edge-lines text.edge-label[data-pin=${S2}]`).textContent(),'edge as pinned');
+    assert.equal(await page.locator(`#pin-list li[data-pin=${S2}] label.old-edge input`).isChecked(),true,'Show old edge is on for the selected pin');
+    if(X.shots)await page.screenshot({path:path.join(X.shots,'edge-as-pinned.png')});
+    const hp=(await st0(page)).hp;
+    await page.locator(`#pin-list li[data-pin=${S2}] label.old-edge input`).uncheck();await settle(page);
+    assert.equal((await lines(S2)).length,0,'Show old edge off hides it');assert.equal((await st0(page)).hp,hp,'not an undo step');
+    await page.locator(`#pin-list li[data-pin=${S2}] label.old-edge input`).check();await settle(page);
+    assert((await lines(S2)).length>0,'and on shows it again');
+    const saved=JSON.parse(fs.readFileSync(pinsFile,'utf8')).pins.find(p=>p.id===S2);
+    assert.deepEqual(saved.anchor.local,rec.midpoint,'the stored anchor is untouched');assert.deepEqual(saved.edge.points,gone.points,'and so is the stored edge');
+    const rj=JSON.parse(review('--json')).open_pins,r1=rj.find(p=>p.id===S1),r2=rj.find(p=>p.id===S2);
+    assert.equal(r1.edge_changed,false);assert.equal(r2.edge_changed,true,'aad review --json: edge_changed');
+    assert.match(review(),/EDGE CHANGED: the pinned edge no longer exists in this form; the geometry changed here since the pin was made/);
+    ok(`stale edge pins: ${S1} (same ${rec.length_mm.toFixed(1)} mm edge, older build) re-matches; ${S2} (edge gone) hidden until selected, then thin dashed "edge as pinned" with Show old edge; card "${msg}"; aad review edge_changed`);
+  }finally{
+    const d=JSON.parse(fs.readFileSync(pinsFile,'utf8'));d.pins=d.pins.filter(p=>p.id!==S1&&p.id!==S2);fs.writeFileSync(pinsFile,JSON.stringify(d,null,1));
+    await reloadReady(page);
+  }
+}
+// overlapping markers (r8): two pins on the same point fan out around it, both numbers whole and clickable, each
+// with a leader to the true point; they fall back together when the pins go
+async function checkFanOut(X){
+  const {page,ok}=X;
+  await page.locator('#tabs [data-tab=pins]').click();await page.locator('#modes [data-mode=select]').click();
+  const pinsFile=path.join(X.rd,'pins.json'),doc=JSON.parse(fs.readFileSync(pinsFile,'utf8'));
+  const base=doc.pins.find(p=>p.kind==='point'&&p.status!=='resolved'&&p.anchor)||doc.pins.find(p=>p.kind==='point'&&p.anchor);assert(base,'a point pin to copy');
+  const n1=doc.next,n2=doc.next+1,F1='p'+n1,F2='p'+n2;
+  const cp=n=>({...JSON.parse(JSON.stringify(base)),id:'p'+n,n,status:'open',note:'same spot '+n,parent:undefined,history:undefined,measure:null,repinned_build:undefined,repinned_at:undefined});
+  doc.pins.push(cp(n1),cp(n2));doc.next=n2+1;fs.writeFileSync(pinsFile,JSON.stringify(doc,null,1));
+  try{
+    await reloadReady(page);
+    await page.evaluate(([n])=>{const k=viewer.controls;k.enableDamping=false;viewer.home();},[0]);await settle(page);
+    const lay=()=>page.evaluate(([a,b])=>{const R=id=>{const e=document.querySelector(`#labels .pin-marker[data-pin="${id}"]`);const r=e.getBoundingClientRect();
+        const h=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return {l:r.left,t:r.top,r:r.right,b:r.bottom,hit:h===e,shown:getComputedStyle(e).display!=='none'};};
+      const A=R(a),B=R(b),ov=Math.max(0,Math.min(A.r,B.r)-Math.max(A.l,B.l))*Math.max(0,Math.min(A.b,B.b)-Math.max(A.t,B.t));
+      return {A,B,ov,leaders:[a,b].map(id=>document.querySelectorAll(`#pin-leaders line.ld[data-pin="${id}"]`).length),fanned:viewer.review.state().fanned};},[F1,F2]);
+    let L=await lay();
+    assert(L.A.shown&&L.B.shown,'both markers on screen');
+    assert.equal(L.ov,0,'two pins on one point do not overlap: '+JSON.stringify(L));
+    assert(L.A.hit&&L.B.hit,'both numbers are whole and on top: '+JSON.stringify(L));
+    assert(L.leaders[0]>0&&L.leaders[1]>0,'each fanned marker has a leader to its point');
+    // the camera moves: still apart after it settles
+    await page.evaluate(()=>{const k=viewer.controls;k.rotate(0.6,0.2,false);k.update(0);viewer.commit();});await settle(page);
+    L=await lay();assert.equal(L.ov,0,'apart after an orbit: '+JSON.stringify(L));
+    const anyOv=await page.evaluate(()=>{const rs=[...document.querySelectorAll('#labels .pin-marker:not(.draft)')].filter(e=>getComputedStyle(e).display!=='none').map(e=>[e.dataset.pin,e.getBoundingClientRect()]),bad=[];
+      for(let i=0;i<rs.length;i++)for(let j=i+1;j<rs.length;j++){const [a,A]=rs[i],[b,B]=rs[j];if(A.left<B.right-0.5&&B.left<A.right-0.5&&A.top<B.bottom-0.5&&B.top<A.bottom-0.5)bad.push(a+'/'+b);}return bad;});
+    assert.deepEqual(anyOv,[],'no two pin markers overlap anywhere in the view');
+    if(X.shots)await page.screenshot({path:path.join(X.shots,'pins-fanned.png')});
+    ok(`fan out: ${F1} and ${F2} on one point sit apart (no overlap, both hit-testable) with leaders, also after an orbit`);
+  }finally{
+    const d=JSON.parse(fs.readFileSync(pinsFile,'utf8'));d.pins=d.pins.filter(p=>p.id!==F1&&p.id!==F2);fs.writeFileSync(pinsFile,JSON.stringify(d,null,1));
+    await reloadReady(page);
+  }
+}
+// resizable panes (r8): drag the left and right dividers within their limits (the canvas fills the space between the
+// panels with no gap or overlap and the camera aspect follows), arrow keys, double-click resets, the tree divider,
+// collapse to a rail (fold button and the , and . keys), all remembered across a reload; dragging never orbits
+async function checkPanes(X){
+  const {page,ok}=X;
+  await page.setViewportSize({width:1600,height:1050});
+  await page.evaluate(()=>{for(const k of Object.keys(localStorage))if(k.startsWith('aad-pane-'))localStorage.removeItem(k);});
+  await reloadReady(page);await page.locator('#modes [data-mode=select]').click();
+  const geo=()=>page.evaluate(()=>{const R=id=>document.getElementById(id).getBoundingClientRect(),c=viewer.camera,cv=R('c');
+    const asp=c.isPerspectiveCamera?c.aspect:(c.right-c.left)/(c.top-c.bottom);
+    const vis=id=>{const e=document.getElementById(id);return getComputedStyle(e).display!=='none'&&R(id).width>0;};
+    return {...viewer.panes(),sideW:R('side').width,sideR:R('side').right,viewL:R('view').left,viewR:R('view').right,viewW:R('view').width,panelL:R('panel').left,panelW:R('panel').width,
+      cvL:cv.left,cvR:cv.right,cvW:cv.width,cvH:cv.height,buf:document.getElementById('c').width/devicePixelRatio,aspect:asp,cam:viewer.state().cam,hp:viewer.state().hp,
+      sideShown:vis('side'),panelShown:vis('panel'),railL:vis('rail-l'),railR:vis('rail-r'),tree:R('tree').height,low:document.getElementById('side-low').scrollHeight-document.getElementById('side-low').clientHeight,
+      cube:(()=>{const e=document.getElementById('cube-nav');return e?e.getBoundingClientRect().right:null;})()};});
+  const fits=(g,what)=>{
+    assert(Math.abs(g.viewL-g.sideR)<=1.01,`${what}: the view starts where the left panel ends (${g.viewL} vs ${g.sideR})`);
+    assert(Math.abs(g.viewR-g.panelL)<=1.01,`${what}: the view ends where the right panel starts (${g.viewR} vs ${g.panelL})`);
+    assert(Math.abs(g.cvL-g.viewL)<=1.01&&Math.abs(g.cvW-g.viewW)<=1.01,`${what}: the canvas fills the view (${g.cvL},${g.cvW} vs ${g.viewL},${g.viewW})`);
+    assert(Math.abs(g.buf-g.cvW)<=1.01,`${what}: the drawing buffer matches the canvas (${g.buf} vs ${g.cvW})`);
+    assert(Math.abs(g.aspect-g.cvW/g.cvH)<0.01,`${what}: camera aspect ${g.aspect} matches ${g.cvW/g.cvH}`);
+    assert(g.cube==null||(g.cube<=g.viewR+0.5&&g.cube>g.viewR-60),`${what}: the view cube stays in the view's corner`);
+    assert(g.viewW>=359.5,`${what}: the view keeps 360 px (${g.viewW})`);
+  };
+  let g=await geo();
+  assert.equal(g.side,320);assert.equal(g.panel,380);fits(g,'defaults');
+  const cam0=g.cam,hp0=g.hp,tDef=g.tree;
+  const drag=async(id,dx,dy=0)=>{const b=await page.locator('#'+id).boundingBox(),x=b.x+b.width/2,y=b.y+(dy?b.height/2:b.height*0.25);
+    await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+dx/2,y+dy/2,{steps:4});await page.mouse.move(x+dx,y+dy,{steps:4});await page.mouse.up();await page.waitForTimeout(250);};
+  await drag('split-l',100);g=await geo();
+  assert(Math.abs(g.side-420)<=1&&Math.abs(g.sideW-420)<=1,'dragging the left divider widens the left panel: '+g.side);fits(g,'left +100');
+  await drag('split-r',-150);g=await geo();
+  assert(Math.abs(g.panel-530)<=1&&Math.abs(g.panelW-530)<=1,'dragging the right divider widens the right panel: '+g.panel);fits(g,'right +150');
+  await drag('split-l',1000);g=await geo();assert.equal(g.side,520,'left panel stops at 520 px');fits(g,'left max');
+  await drag('split-r',-2000);g=await geo();assert.equal(g.panel,720,'right panel stops at 720 px (the view keeps 360)');fits(g,'right max');
+  assert(Math.abs(g.viewW-360)<=1,'with both panels at their limits the view is 360 px: '+g.viewW);
+  await drag('split-l',-1000);g=await geo();assert.equal(g.side,200,'left panel stops at 200 px');fits(g,'left min');
+  await drag('split-r',2000);g=await geo();assert.equal(g.panel,300,'right panel stops at 300 px');fits(g,'right min');
+  assert.deepEqual(g.cam,cam0,'dragging a divider never moves the camera');assert.equal(g.hp,hp0,'and is no undo step');
+  assert.equal(await page.evaluate(()=>(getSelection()+'').length),0,'and selects no text');
+  // keys: a focused divider moves 16 px per arrow
+  await page.locator('#split-l').focus();await page.keyboard.press('ArrowRight');await page.keyboard.press('ArrowRight');
+  g=await geo();assert.equal(g.side,232,'Right arrow twice: 200 + 32');
+  await page.locator('#split-r').focus();await page.keyboard.press('ArrowLeft');g=await geo();assert.equal(g.panel,316,'Left arrow on the right divider widens the right panel by 16');
+  await drag('split-l',150);await drag('split-r',-100);g=await geo();const want={side:g.side,panel:g.panel};
+  // the tree divider: more tree, the block below keeps its content and scrolls if it must
+  const t0=g.tree;await drag('split-t',0,-80);g=await geo();assert(Math.abs(g.tree-(t0-80))<=2,`the tree divider gives the tree less height (${t0} -> ${g.tree})`);
+  const tSet=g.tree;
+  // remembered across a reload
+  await reloadReady(page);g=await geo();
+  assert.deepEqual({side:g.side,panel:g.panel},want,'widths survive a reload');assert(Math.abs(g.tree-tSet)<=2,'the tree height too');fits(g,'after reload');
+  if(X.shots)await page.screenshot({path:path.join(X.shots,'panes-resized.png')});
+  // a narrow window clamps the layout without overwriting the saved widths
+  await page.setViewportSize({width:1000,height:900});await page.waitForTimeout(400);g=await geo();
+  assert(g.viewW>=359.5,'a narrow window keeps the view at 360 px');assert.deepEqual({side:g.saved.side,panel:g.saved.panel},want,'and keeps the saved widths');
+  await page.setViewportSize({width:1600,height:1050});await page.waitForTimeout(400);g=await geo();assert.deepEqual({side:g.side,panel:g.panel},want,'back at 1600 px the saved layout returns');
+  // double-click resets each divider
+  await page.locator('#split-l').dblclick({position:{x:3,y:20}});await page.locator('#split-r').dblclick({position:{x:3,y:20}});await page.locator('#split-t').dblclick();await page.waitForTimeout(300);
+  g=await geo();assert.equal(g.side,320,'double-click resets the left panel');assert.equal(g.panel,380,'and the right one');assert(Math.abs(g.tree-tDef)<=2,`and the tree (${g.tree} vs ${tDef})`);fits(g,'reset');
+  // collapse: the fold buttons, the , and . keys, rails to bring them back, remembered
+  await page.locator('#split-l .fold').click();await page.waitForTimeout(300);g=await geo();
+  assert(!g.sideShown&&g.railL,'the fold button collapses the left panel to a rail');fits({...g,sideR:g.viewL},'left collapsed');
+  await page.locator('#rail-l').click();await page.waitForTimeout(300);g=await geo();assert(g.sideShown&&!g.railL&&g.side===320,'the rail brings it back at its width');
+  await blurAll(page);await page.keyboard.press('.');await page.waitForTimeout(300);g=await geo();assert(!g.panelShown&&g.railR,'. collapses the right panel');
+  await page.keyboard.press(',');await page.waitForTimeout(300);g=await geo();assert(!g.sideShown&&g.railL,', collapses the left panel');
+  assert(g.viewW>1500,'both collapsed: the view takes the width ('+g.viewW+')');
+  await reloadReady(page);g=await geo();assert(!g.sideShown&&!g.panelShown,'collapsed panels stay collapsed after a reload');
+  await blurAll(page);await page.keyboard.press(',');await page.keyboard.press('.');await page.waitForTimeout(300);g=await geo();
+  assert(g.sideShown&&g.panelShown,'the keys bring both back');fits(g,'restored');
+  // a , typed in a text field stays in the field
+  await page.locator('#weight-infill').focus();await page.keyboard.press(',');await page.waitForTimeout(200);
+  assert((await geo()).sideShown,'a , typed in a number field does not collapse the panel');await blurAll(page);
+  await page.evaluate(()=>{for(const k of Object.keys(localStorage))if(k.startsWith('aad-pane-'))localStorage.removeItem(k);});await reloadReady(page);
+  ok(`panes: left 200..520 and right 300..720 by drag and arrows, view >= 360 px, canvas and aspect follow with no gap; tree divider; widths survive a reload; narrow window clamps without overwriting; double-click resets; fold, rails, , and . collapse and restore, remembered`);
+}
+const st0=page=>page.evaluate(()=>({hp:viewer.state().hp}));
 
 // the toolbar's left group: DEV badge, a long model name and a long build status at 1600, 1280, 1100 and 960 px
 async function checkToolbarFit(X){

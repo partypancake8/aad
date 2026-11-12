@@ -352,6 +352,89 @@ function resize(){
   labels.setSize(w,h);if(cube)cube.update();dirty=true;
 }
 new ResizeObserver(resize).observe(host);
+// ---- resizable panes: drag the divider between the left panel and the view, or between the view and the right
+// panel (6 px hit area; Left and Right arrows move a focused divider 16 px; double-click resets that panel), and the
+// one between the part tree and the block below it. Limits: left 200 to 520 px, right 300 to 720 px, the view never
+// under 360 px (the panel being dragged gives way). The fold button on a divider (or , and . for left and right)
+// collapses a panel to a slim rail. Sizes are remembered in this browser (aad-pane-*); a window too narrow for
+// them clamps the layout without overwriting what is saved. The canvas, camera aspect, view cube and labels follow
+// through the ResizeObserver on the view.
+const PANES={side:{min:200,max:520,def:320},panel:{min:300,max:720,def:380}},VIEW_MIN=360,RAIL=22,TREE_MIN=60,PANE_KEY='aad-pane-';
+const paneGet=k=>{try{return localStorage.getItem(PANE_KEY+k);}catch(e){return null;}};
+const paneSet=(k,v)=>{try{if(v==null)localStorage.removeItem(PANE_KEY+k);else localStorage.setItem(PANE_KEY+k,String(v));}catch(e){}};
+const paneNum=k=>{const v=+paneGet(k);return Number.isFinite(v)&&v>0?v:null;};
+const pane={side:paneNum('side'),panel:paneNum('panel'),tree:paneNum('tree'),sideOff:paneGet('side-collapsed')==='1',panelOff:paneGet('panel-collapsed')==='1'};
+const hasPanel=()=>!document.body.classList.contains('no-panel');
+// the widths this window shows: saved (or default) values, clamped to their limits and to the window
+function paneWidths(){
+  const W=document.body.clientWidth,cl=(k,w)=>Math.max(PANES[k].min,Math.min(PANES[k].max,w));
+  let s=pane.sideOff?RAIL:cl('side',pane.side??PANES.side.def),p=!hasPanel()?0:pane.panelOff?RAIL:cl('panel',pane.panel??PANES.panel.def);
+  let over=s+p+VIEW_MIN-W;
+  if(over>0&&hasPanel()&&!pane.panelOff){const d=Math.min(over,p-PANES.panel.min);p-=d;over-=d;}
+  if(over>0&&!pane.sideOff){const d=Math.min(over,s-PANES.side.min);s-=d;}
+  return {side:s,panel:p};
+}
+function lowContent(){const lo=$('side-low');let h=0;for(const c of lo.children)if(c.offsetParent!==null){const cs=getComputedStyle(c);h+=c.offsetHeight+parseFloat(cs.marginTop)+parseFloat(cs.marginBottom);}return h;}
+function treeMax(){const sd=$('side'),t=$('tree');return sd.getBoundingClientRect().bottom-t.getBoundingClientRect().top-6-lowContent();}
+function applyPanes(){
+  const b=document.body,w=paneWidths();
+  b.style.setProperty('--side-w',w.side+'px');if(hasPanel())b.style.setProperty('--panel-w',w.panel+'px');
+  b.classList.toggle('side-off',pane.sideOff);b.classList.toggle('panel-off',pane.panelOff&&hasPanel());
+  $('split-l').setAttribute('aria-valuenow',String(w.side));$('split-r').setAttribute('aria-valuenow',String(w.panel));
+  const t=$('tree');
+  if(pane.tree&&!pane.sideOff){b.classList.add('tree-sized');t.style.height=Math.round(Math.max(TREE_MIN,Math.min(pane.tree,treeMax())))+'px';}
+  else{b.classList.remove('tree-sized');t.style.height='';}
+}
+function setPaneWidth(k,w){
+  const other=paneWidths()[k==='side'?'panel':'side'];
+  pane[k]=Math.round(Math.max(PANES[k].min,Math.min(PANES[k].max,document.body.clientWidth-other-VIEW_MIN,w)));applyPanes();
+}
+function setCollapsed(k,on){
+  if(k==='panel'&&!hasPanel())return;
+  pane[k+'Off']=!!on;paneSet(k+'-collapsed',on?'1':null);applyPanes();
+  ($(on?(k==='side'?'rail-l':'rail-r'):(k==='side'?'split-l':'split-r'))||document.body).focus?.({preventScroll:true});
+}
+function dragDivider(el,axis,start,move,end){
+  el.addEventListener('pointerdown',e=>{
+    if(e.button!==0||e.target.closest('.fold'))return;
+    e.preventDefault();e.stopPropagation();el.setPointerCapture(e.pointerId);
+    const b=document.body;b.classList.add('pane-drag');b.classList.toggle('rows',axis==='y');el.classList.add('drag');
+    const s0=start(),p0=axis==='x'?e.clientX:e.clientY;let at=p0,raf=0;
+    const mv=ev=>{at=axis==='x'?ev.clientX:ev.clientY;if(!raf)raf=requestAnimationFrame(()=>{raf=0;move(s0,at-p0);});};
+    const up=()=>{cancelAnimationFrame(raf);raf=0;move(s0,at-p0);end();b.classList.remove('pane-drag','rows');el.classList.remove('drag');
+      el.removeEventListener('pointermove',mv);el.removeEventListener('pointerup',up);el.removeEventListener('pointercancel',up);};
+    el.addEventListener('pointermove',mv);el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up);
+  });
+}
+for(const [id,k,sign] of [['split-l','side',1],['split-r','panel',-1]]){
+  const el=$(id);
+  dragDivider(el,'x',()=>paneWidths()[k],(w0,d)=>setPaneWidth(k,w0+sign*d),()=>paneSet(k,pane[k]));
+  el.addEventListener('dblclick',e=>{if(e.target.closest('.fold'))return;e.stopPropagation();pane[k]=null;paneSet(k,null);applyPanes();});
+  el.addEventListener('keydown',e=>{
+    if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight')return;e.preventDefault();e.stopPropagation();
+    setPaneWidth(k,paneWidths()[k]+sign*(e.key==='ArrowRight'?16:-16));paneSet(k,pane[k]);
+  });
+  el.querySelector('.fold').addEventListener('click',e=>{e.stopPropagation();setCollapsed(k,true);});
+  el.querySelector('.fold').addEventListener('pointerdown',e=>e.stopPropagation());
+}
+$('rail-l').onclick=()=>setCollapsed('side',false);$('rail-r').onclick=()=>setCollapsed('panel',false);
+{const el=$('split-t'),t=$('tree');
+  dragDivider(el,'y',()=>t.getBoundingClientRect().height,(h0,d)=>{pane.tree=Math.round(Math.max(TREE_MIN,Math.min(h0+d,treeMax())));applyPanes();},()=>paneSet('tree',pane.tree));
+  el.addEventListener('dblclick',e=>{e.stopPropagation();pane.tree=null;paneSet('tree',null);applyPanes();});
+  el.addEventListener('keydown',e=>{
+    if(e.key!=='ArrowUp'&&e.key!=='ArrowDown')return;e.preventDefault();e.stopPropagation();
+    pane.tree=Math.round(Math.max(TREE_MIN,Math.min(t.getBoundingClientRect().height+(e.key==='ArrowDown'?16:-16),treeMax())));applyPanes();paneSet('tree',pane.tree);
+  });}
+// , and . collapse or bring back the left and right panels ([ and ] already pitch a part in Move)
+addEventListener('keydown',e=>{
+  if(e.metaKey||e.ctrlKey||e.altKey||e.repeat)return;const t=e.target;
+  if(t&&(t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable||(t.tagName==='INPUT'&&!['checkbox','radio','range','button','color'].includes(t.type))))return;
+  if(e.key===','){e.preventDefault();setCollapsed('side',!pane.sideOff);}
+  else if(e.key==='.'&&hasPanel()){e.preventDefault();setCollapsed('panel',!pane.panelOff);}
+});
+addEventListener('resize',applyPanes);
+{let np=hasPanel();new MutationObserver(()=>{if(hasPanel()!==np){np=hasPanel();applyPanes();}}).observe(document.body,{attributes:true,attributeFilter:['class']});}
+applyPanes();
 // ---- view cube, tight in the viewport's top-right corner: faces, edges and corners are clickable, and dragging the
 // cube orbits the camera live, as in Fusion; CAD names (Z up, front is -Y). The cube moves the camera itself (a
 // click animates, a drag sets it every pointer move); while it does, the controls are not updated, or their own
@@ -1119,14 +1202,20 @@ function hover(now){
 // corner (over EDGE_TURN_DEG between segments) or a junction (a vertex shared by three or more segments). ----
 const EDGE_PX=8,EDGE_TURN_DEG=30,EDGE_COS=Math.cos(EDGE_TURN_DEG*D2R);
 let hoverEdge=null;
-function edgeData(m){
-  const e=m.children.find(c=>c.userData.cadEdge);if(!e)return null;
-  if(e.userData.data)return e.userData.data;
+const offEdges=new WeakMap(),edgeDataOf=new WeakMap();   // never in userData: mesh.clone() copies userData as JSON
+function edgeData(m,force=false){
+  let e=m.children.find(c=>c.userData.cadEdge);
+  if(!e&&force){                            // Edges display off: the same segments, built off-scene (edge pin re-match)
+    e=offEdges.get(m);                      // a WeakMap, not userData: mesh.clone() copies userData as JSON
+    if(!e){e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry,cadAppearance?.edgeAngles?.[m.userData.leaf?.component]??35));e.visible=false;offEdges.set(m,e);}
+  }
+  if(!e)return null;
+  const had=edgeDataOf.get(e);if(had)return had;
   const pos=e.geometry.attributes.position,a=pos.array,nv=pos.count,vid=new Int32Array(nv),ids=new Map(),q=1e4;
   for(let i=0;i<nv;i++){const k=Math.round(a[3*i]*q)+','+Math.round(a[3*i+1]*q)+','+Math.round(a[3*i+2]*q);let id=ids.get(k);if(id===undefined){id=ids.size;ids.set(k,id);}vid[i]=id;}
   const n=nv/2,adj=new Map();
   for(let s=0;s<n;s++)for(const v of [vid[2*s],vid[2*s+1]]){let l=adj.get(v);if(!l)adj.set(v,l=[]);l.push(s);}
-  return e.userData.data={a,n,vid,adj,obj:e,chainOf:new Int32Array(n).fill(-1),chains:[]};
+  const d={a,n,vid,adj,obj:e,chainOf:new Int32Array(n).fill(-1),chains:[]};edgeDataOf.set(e,d);return d;
 }
 function edgeChain(d,s0){
   if(d.chainOf[s0]>=0)return d.chains[d.chainOf[s0]];
@@ -1147,6 +1236,12 @@ function edgeChain(d,s0){
   const pts=[...bw.reverse(),P(2*s0),P(2*s0+1),...fw],ch={pts,segs:[...used],record:edgeRecord(pts)};
   const id=d.chains.push(ch)-1;for(const s of used)d.chainOf[s]=id;
   return ch;
+}
+// every feature-edge chain of a mesh, part-local (the chains the edge pick grows), whether or not Edges are shown
+function featureChains(m){
+  const d=edgeData(m,true);if(!d)return [];
+  for(let s=0;s<d.n;s++)if(d.chainOf[s]<0)edgeChain(d,s);
+  return d.chains;
 }
 // the pin's edge record, part-local mm: a simplified polyline (Douglas-Peucker, 0.02 mm, at most 256 points), the
 // full length along the chain, its ends, the point halfway along it and the unit direction from start to end
@@ -1212,9 +1307,15 @@ function edgeScreen(o,W,H){
 function drawEdgeOverlay(){
   const g=$('edge-lines');if(!g)return;g.replaceChildren();if(fishOn())return;
   const W=host.clientWidth,H=host.clientHeight;cam.updateMatrixWorld();
-  for(const o of edgeOverlays())for(const run of edgeScreen(o,W,H)){
-    const pts=run.map(q=>q[0].toFixed(1)+','+q[1].toFixed(1)).join(' ');
-    for(const c of ['edge-halo','edge-line '+o.cls]){const l=document.createElementNS(SVGNS,'polyline');l.setAttribute('points',pts);l.setAttribute('class',c);g.append(l);}
+  for(const o of edgeOverlays()){
+    const mod=o.mod?' '+o.mod:'';
+    for(const run of edgeScreen(o,W,H)){
+      const pts=run.map(q=>q[0].toFixed(1)+','+q[1].toFixed(1)).join(' ');
+      for(const c of ['edge-halo'+mod,'edge-line '+o.cls+mod]){const l=document.createElementNS(SVGNS,'polyline');l.setAttribute('points',pts);l.setAttribute('class',c);if(o.pin)l.dataset.pin=o.pin;g.append(l);}
+    }
+    if(o.label&&o.at){const q=edgeScreen({mesh:o.mesh,pts:[o.at,o.at]},W,H)[0];        // a short text at a part-local point
+      if(q){const t=document.createElementNS(SVGNS,'text');t.setAttribute('x',(q[0][0]+8).toFixed(1));t.setAttribute('y',(q[0][1]-8).toFixed(1));
+        t.setAttribute('class','edge-label'+mod);if(o.pin)t.dataset.pin=o.pin;t.textContent=o.label;g.append(t);}}
   }
 }
 // ---- undo / redo: one history of committed state (visibility, section, explode, selection, camera buttons,
@@ -1509,15 +1610,16 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
   get cam(){return cam;},get meshList(){return meshList;},get modelRoot(){return modelRoot;},get M(){return M;},get sel(){return sel;},
   get bbox(){return bbox;},get ready(){return ready;},get restoring(){return restoring;},
   setLeftAction:a=>{leftAction=a==='none'?ACT.NONE:ACT.ROTATE;mouseMap();},
-  pickHit,pickInfo,pickEdge,edgeScreen,partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
+  pickHit,pickInfo,pickEdge,edgeScreen,featureChains,get loadedMtime(){return loadedMtime;},partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
   dirty:()=>{dirty=true;},renderNow:()=>{if(!SOFT)renderNow();},soft:SOFT,
   camera:()=>{const c=snapCam();return {projection:c.proj==='o'?'ortho':'persp',position:c.p,target:c.t,up:c.u,zoom:c.z,view:c.v,fov:cam.isPerspectiveCamera?cam.fov:null};},
   hiddenKeys:()=>[...vis].filter(([,v])=>!v).map(([k])=>k)};}
 // a small handle for scripted checks (CDP) and the console
 window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clearSel,undo,redo,commit,get cube(){return cube;},
   meshes:()=>meshList,toScreen:p=>{const r=canvas.getBoundingClientRect(),v=new THREE.Vector3(...p).project(cam);return [r.left+(v.x+1)/2*r.width,r.top+(1-v.y)/2*r.height];},
-  get review(){return R;},get weight(){return Wt;},get lastCopied(){return lastCopied;},
+  get review(){return R;},panes:()=>({...paneWidths(),saved:{...pane}}),get weight(){return Wt;},get lastCopied(){return lastCopied;},
   edgeAt:(x,y)=>{const e={clientX:x,clientY:y};const ed=pickEdge(e,pickHit(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px}:null;},
+  edgeChains:k=>{let m=null;nodes.get(k)?.obj.traverse(o=>{if(!m&&o.isMesh)m=o;});return m?featureChains(m).map(c=>c.record):[];},
   get hoverEdge(){return hoverEdge?{key:hoverEdge.mesh.userData.key,length:hoverEdge.record.length_mm}:null;},pickAt:(x,y)=>{const h=pickHit({clientX:x,clientY:y});const i=pickInfo(h);if(i)delete i.mesh;return i;},
   home:()=>camAction(goHome),fitSelection:()=>camAction(fitSelection),setSides:v=>{setSides(v);commit();},
   applyView:n=>camAction(()=>applyView(VIEWS.find(v=>v.name===n))),

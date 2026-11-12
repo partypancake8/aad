@@ -28,7 +28,10 @@ export function initReview(V){
   // history. forceShow draws them anyway while Send packet renders its screenshot.
   let pinsShown=true,forceShow=false;
   try{pinsShown=localStorage.getItem('aad-pins-shown')!=='0';}catch(e){}
-  const partHidden=new Map(),occluded=new Set();                  // pin id -> its part is hidden; pins behind geometry
+  const partHidden=new Map(),occluded=new Set();
+  // Options: Dim pins behind geometry (on by default), remembered in this browser
+  let dimOcc=true;try{dimOcc=localStorage.getItem('aad-dim-occluded')!=='0';}catch(e){}
+  const OCC_TITLE='behind other geometry from this view';                  // pin id -> its part is hidden; pins behind geometry
   const measGroup=new THREE.Group();measGroup.name='Measurements';V.scene.add(measGroup);
   const ghost=new THREE.Group();ghost.name='Baseline ghost';ghost.visible=false;V.scene.add(ghost);
   let ghostKey=null;
@@ -282,6 +285,51 @@ export function initReview(V){
   }
   // right-click "Measure from here": Measure mode with the first point already placed
   function measureFrom(h){setMode('measure');measA=MEAS.fromHit(h);drawMeasDraft(measA);}
+  // ---- stale edge pins: an edge pin keeps the polyline of the edge it was made on (part-local mm). On a later build
+  // that polyline is matched against the part's current feature-edge chains: points sampled along it lie within
+  // EDGE_TOL mm of a chain (mean and max) whose length agrees within EDGE_LEN. A match draws the current edge as
+  // usual; no match means the geometry changed there, so the stored polyline is history: thin, dashed, labelled
+  // "edge as pinned", shown for the selected pin (its card's Show old edge says otherwise). The anchor is never
+  // touched. Results are cached per pin and build.
+  const EDGE_TOL=0.3,EDGE_LEN=0.05,edgeMatches=new Map(),showOld=new Map();
+  const edgeBuild=p=>p.repinned_build||p.build||null,edgePinnedAt=p=>p.repinned_at||p.created;
+  function polySamples(pts,n){
+    const P=pts.map(q=>new THREE.Vector3(...q)),cum=[0];for(let i=1;i<P.length;i++)cum.push(cum[i-1]+P[i].distanceTo(P[i-1]));
+    const L=cum[cum.length-1],out=[];if(P.length<2||L<=0)return P;
+    for(let j=0,i=1;j<n;j++){const t=L*j/(n-1);while(i<P.length-1&&cum[i]<t)i++;const u=(t-cum[i-1])/Math.max(1e-12,cum[i]-cum[i-1]);out.push(P[i-1].clone().lerp(P[i],Math.max(0,Math.min(1,u))));}
+    return out;
+  }
+  const _sa=new THREE.Vector3(),_sb=new THREE.Vector3();
+  function distPoly(q,P){
+    let best=Infinity;
+    for(let i=1;i<P.length;i++){_sa.subVectors(P[i],P[i-1]);const l2=_sa.lengthSq();const t=l2>0?Math.max(0,Math.min(1,_sb.subVectors(q,P[i-1]).dot(_sa)/l2)):0;
+      const d=_sb.copy(P[i-1]).addScaledVector(_sa,t).distanceTo(q);if(d<best)best=d;}
+    return best;
+  }
+  // {changed, pts (the current chain when it matches), mean, max} on a build other than the pin's; null when the
+  // pin is not an edge pin, is on the current build, or its part is missing
+  function edgeMatch(p){
+    if(p.kind!=='edge'||!p.edge?.points?.length||!p.anchor)return null;
+    const cur=server?.build,b=edgeBuild(p);if(!cur||!b||b===cur)return null;
+    const k=keyFor(p.anchor.part),mesh=k&&meshOf(k);if(!mesh)return null;
+    const ck=p.id+'|'+b+'|'+cur+'|'+J(p.edge.points[0])+p.edge.points.length;let r=edgeMatches.get(ck);if(r)return r;
+    const L=+p.edge.length_mm||0,S=polySamples(p.edge.points,Math.max(8,Math.min(64,Math.ceil(L/0.5)+1)));
+    const sb=new THREE.Box3().setFromPoints(S).expandByScalar(EDGE_TOL);let best=null;
+    for(const ch of V.featureChains(mesh)){
+      if(Math.abs(ch.record.length_mm-L)>EDGE_LEN*Math.max(L,1e-6))continue;
+      if(!ch.box)ch.box=new THREE.Box3().setFromPoints(ch.pts);if(!ch.box.intersectsBox(sb))continue;
+      let sum=0,max=0;for(const q of S){const d=distPoly(q,ch.pts);sum+=d;if(d>max)max=d;if(max>EDGE_TOL)break;}
+      if(max<=EDGE_TOL&&sum/S.length<=EDGE_TOL&&(!best||sum<best.sum))best={ch,sum,max};
+    }
+    r=best?{changed:false,pts:best.ch.pts,mean:best.sum/S.length,max:best.max}:{changed:true};
+    edgeMatches.set(ck,r);return r;
+  }
+  const edgeChanged=p=>!!edgeMatch(p)?.changed;
+  const oldEdgeShown=p=>showOld.has(p.id)?showOld.get(p.id):p.id===hotPin;
+  function edgeChangedText(p){
+    const t=V.loadedMtime,rb=t?when(new Date(t*1000).toISOString()):'';
+    return `The pinned edge changed since this pin was made (pinned ${when(edgePinnedAt(p))}${rb?`, model rebuilt ${rb}`:''})`;
+  }
   // ---- pin list, markers ----
   function pinWhere(p){
     if(p.anchor){const k=keyFor(p.anchor.part);return (k?(V.nodes.get(k).leaf?.name||k):p.anchor.part.node)+(p.edge?`, edge ${p.edge.length_mm.toFixed(2)} mm`:'')+' at '+p.anchor.local.map(x=>(+x).toFixed(1)).join(', ');}
@@ -337,8 +385,13 @@ export function initReview(V){
       ${par?`<div class="where">follow-up to #${par.n}</div>`:''}${RP.was(p)}
       <div class="note">${esc(p.note)||`<span class="muted">${esc(meaningOf(p.issue_class))}</span>`}</div>
       <div class="where">${esc(pinWhere(p))}${p.measure?`, measured ${p.measure.distance.toFixed(2)} mm`:''}</div>
+      ${!done&&edgeChanged(p)?`<div class="edge-stale" title="Pinned on build ${esc(edgeBuild(p))}; the current build is ${esc(server?.build)}. The stored edge no longer matches any edge of this part (within ${EDGE_TOL} mm). The pin stays where it was."><i class="ic i-alert-triangle"></i><span>${esc(edgeChangedText(p))}</span></div>
+      <label class="old-edge" title="Draw the edge as it was when the pin was made (dashed)"><input type="checkbox" data-act="oldedge"${oldEdgeShown(p)?' checked':''}> Show old edge</label>`:''}
       ${sl?`<div class="hist" title="${esc(sl.tip)}">${esc(sl.t)}</div>`:''}`;
-    li.onclick=e=>{const a=e.target.closest('button')?.dataset.act;
+    li.onclick=e=>{
+      if(e.target.closest('label.old-edge')){const cb=e.target.closest('label.old-edge').querySelector('input');
+        if(e.target===cb){showOld.set(p.id,cb.checked);V.dirty();}return;}            // view state only, never pins.json
+      const a=e.target.closest('button')?.dataset.act;
       if(a==='resolve'){setStatus(p,'resolved');if(hotPin===p.id)hotPin=null;changed();toast(`Pin <b>#${p.n}</b> resolved. Undo brings it back; it is under Resolved.`,false,3000);return;}
       if(a==='reopen'){setStatus(p,'open');hotPin=p.id;changed();return;}
       if(a==='followup'){startFollowUp(p);return;}
@@ -384,12 +437,13 @@ export function initReview(V){
   }
   function renderMarkers(){
     for(const [,o] of markers){o.removeFromParent();o.element.remove();}
-    markers.clear();
+    markers.clear();fan.clear();fanSig='';
     for(const p of S.pins){
       if(p.status==='resolved')continue;                         // a resolved pin leaves the model at once
       const el=document.createElement('div'),orphan=orphaned(p);
-      el.className=`pin-marker sev-${p.severity} g-${groupOf(classes,p.issue_class)}${RP.isRepinned(p)?' repinned':''}${p.status==='not_fixed'?' notfixed':''}${orphan?' orphan':''}${p.kind==='region'?' region':''}${p.id===hotPin?' hot':''}${occluded.has(p.id)&&p.id!==hotPin?' occluded':''}`;
-      el.textContent=String(p.n);el.title=`#${p.n} ${label(p.issue_class)}: ${p.note}`+(orphan?' (part missing in this build)':'');el.dataset.pin=p.id;
+      el.className=`pin-marker sev-${p.severity} g-${groupOf(classes,p.issue_class)}${RP.isRepinned(p)?' repinned':''}${p.status==='not_fixed'?' notfixed':''}${orphan?' orphan':''}${p.kind==='region'?' region':''}${p.id===hotPin?' hot':''}${dimOcc&&occluded.has(p.id)&&p.id!==hotPin?' occluded':''}`;
+      el.textContent=String(p.n);el.title=`#${p.n} ${label(p.issue_class)}: ${p.note}`+(orphan?' (part missing in this build)':'')+(edgeChanged(p)?'\n'+edgeChangedText(p):'');el.dataset.title=el.title;el.dataset.pin=p.id;
+      if(el.classList.contains('occluded'))el.title+='\n'+OCC_TITLE;
       el.addEventListener('pointerdown',e=>e.stopPropagation());
       el.addEventListener('click',e=>{e.stopPropagation();flyToPin(p);});
       const o=new CSS2DObject(el);o.userData.pin=p.id;o.center.set(0.5,1.25);   // the bubble sits above its point, which stays clickable
@@ -415,6 +469,94 @@ export function initReview(V){
     }
     RP?.beforeLabels();
     if(!forceShow)occlusionTick();
+    fanTick();
+  }
+  // ---- overlapping markers fan out: markers whose bubbles would sit closer than FAN_GAP diameters spread on a
+  // arc over their mean, each with a thin leader in its pin colour to its true point. A pin whose edge is a
+  // small closed loop (a screw head's circle) moves its bubble off the loop with a leader to it, so the loop never
+  // reads as another empty marker. Offsets are CSS translate (CSS2DRenderer owns transform); recomputed when the
+  // camera or the markers change, every FAN_MS while it moves with few pins, else once it settles.
+  const FAN_GAP=1.2,FAN_LIVE_MAX=24,FAN_MS=50,FAN_SETTLE_MS=150,fan=new Map();
+  let fanSig='',fanAt=0,fanTimer=0,fanRuns=0;
+  const _f=new THREE.Vector3();
+  function screenOf(o,W,H){o.getWorldPosition(_f);_f.project(V.cam);return _f.z<-1||_f.z>1?null:{x:(_f.x+1)/2*W,y:(1-_f.y)/2*H};}
+  // the live edge of an edge pin as a small closed loop on screen: {pts, cx, cy, r} or null
+  function loopOf(p,W,H){
+    if(p.kind!=='edge'||!p.edge?.points?.length||!p.anchor)return null;
+    const m=edgeMatch(p);if(m?.changed)return null;
+    const pts=m?m.pts:p.edge.points,a=pts[0],b=pts[pts.length-1],A=a.isVector3?a.toArray():a,B=b.isVector3?b.toArray():b;
+    const L=+p.edge.length_mm||0;if(Math.hypot(A[0]-B[0],A[1]-B[1],A[2]-B[2])>Math.max(0.01,0.002*L))return null;
+    const k=keyFor(p.anchor.part),mesh=k&&meshOf(k);if(!mesh)return null;
+    const runs=V.edgeScreen({mesh,pts},W,H);if(runs.length!==1)return null;const q=runs[0];
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;for(const [x,y] of q){x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y);}
+    if(Math.hypot(x1-x0,y1-y0)>90)return null;
+    return {pts:q,cx:(x0+x1)/2,cy:(y0+y1)/2,r:Math.max(x1-x0,y1-y0)/2};
+  }
+  function fanLayout(){
+    fanAt=performance.now();fanRuns++;
+    const W=V.host.clientWidth,H=V.host.clientHeight,items=[];
+    for(const [id,o] of markers){
+      const el=o.element,p=S.pins.find(x=>x.id===id),a=o.visible&&p?screenOf(o,W,H):null;
+      if(!a){if(fan.delete(id))el.style.translate='';continue;}
+      const w=el.offsetWidth||28,h=el.offsetHeight||28,d=Math.max(w,h),hx=a.x,hy=a.y-0.75*h;
+      let cx=hx,cy=hy;const loop=loopOf(p,W,H);
+      if(loop){let ux=a.x-loop.cx,uy=a.y-loop.cy;const l=Math.hypot(ux,uy);if(l<1){ux=0;uy=-1;}else{ux/=l;uy/=l;}
+        const r=loop.r+d/2+12;cx=loop.cx+ux*r;cy=loop.cy+uy*r;}
+      items.push({id,el,hx,hy,cx,cy,d,n:p.n,loop:!!loop});
+    }
+    const par=items.map((_,i)=>i),root=i=>par[i]===i?i:(par[i]=root(par[i]));
+    for(let i=0;i<items.length;i++)for(let j=i+1;j<items.length;j++){const A=items[i],B=items[j];
+      if(Math.hypot(A.cx-B.cx,A.cy-B.cy)<FAN_GAP*Math.max(A.d,B.d))par[root(i)]=root(j);}
+    for(const t of items){t.ox=t.cx;t.oy=t.cy;t.w=t.el.offsetWidth||28;t.h=t.el.offsetHeight||28;}
+    // place each group; when bubbles of two groups land on each other, merge the groups and place again
+    for(let pass=0;pass<6;pass++){
+      const groups=new Map();items.forEach((it,i)=>{const r=root(i);if(!groups.has(r))groups.set(r,[]);groups.get(r).push(it);});
+      for(const g of groups.values()){
+        const k=g.length;for(const t of g){t.cx=t.ox;t.cy=t.oy;}if(k<2)continue;
+        const mx=g.reduce((s,t)=>s+t.ox,0)/k,my=g.reduce((s,t)=>s+t.oy,0)/k,D=Math.max(...g.map(t=>t.d));
+        // an arc over the top, left to right in the markers' own order: bubbles stay above their points, so the
+        // points themselves stay clickable
+        const R=0.65*D/Math.sin(Math.PI/(2*(k-1)));
+        g.sort((a,b)=>a.ox-b.ox||a.n-b.n);
+        g.forEach((t,i)=>{const th=Math.PI+i*Math.PI/(k-1);t.cx=mx+R*Math.cos(th);t.cy=my+Math.min(0,R*Math.sin(th));});
+      }
+      let merged=false;
+      for(let i=0;i<items.length;i++)for(let j=i+1;j<items.length;j++){const A=items[i],B=items[j];
+        if(root(i)!==root(j)&&Math.abs(A.cx-B.cx)<(A.w+B.w)/2+3&&Math.abs(A.cy-B.cy)<(A.h+B.h)/2+3){par[root(i)]=root(j);merged=true;}}
+      if(!merged)break;
+    }
+    for(const t of items){const dx=t.cx-t.hx,dy=t.cy-t.hy;
+      if(Math.abs(dx)+Math.abs(dy)>0.5){fan.set(t.id,{dx,dy,loop:t.loop});t.el.style.translate=`${dx.toFixed(1)}px ${dy.toFixed(1)}px`;}
+      else if(fan.delete(t.id))t.el.style.translate='';}
+  }
+  function fanSigNow(){
+    const c=V.cam;c.updateMatrixWorld();let s=c.matrixWorld.elements.map(x=>x.toFixed(3)).join()+'|'+c.zoom.toFixed(4)+'|'+V.host.clientWidth+'x'+V.host.clientHeight+'|'+(pinsShown||forceShow);
+    for(const [id,o] of markers)s+='|'+id+(o.visible?1:0)+o.element.textContent;
+    return s;
+  }
+  function fanTick(){
+    const sig=fanSigNow();if(sig===fanSig)return;
+    const t=performance.now(),live=markers.size<=FAN_LIVE_MAX;
+    clearTimeout(fanTimer);
+    fanTimer=setTimeout(()=>{fanTimer=0;fanSig=fanSigNow();fanLayout();V.dirty();},FAN_SETTLE_MS);
+    if(live&&t-fanAt>=FAN_MS){fanLayout();fanSig=sig;}
+  }
+  // leaders from each moved bubble to its true point (or, for a small loop, the nearest point of the loop)
+  function drawLeaders(){
+    const g=$('pin-leaders');if(!g)return;g.replaceChildren();
+    const W=V.host.clientWidth,H=V.host.clientHeight;
+    for(const [id,f] of fan){
+      const o=markers.get(id),p=S.pins.find(x=>x.id===id);if(!o||!o.visible||!p)continue;
+      const a=screenOf(o,W,H);if(!a)continue;
+      const h=o.element.offsetHeight||28,bx=a.x+f.dx,by=a.y-0.75*h+f.dy;let tx=a.x,ty=a.y;
+      if(f.loop){const L=loopOf(p,W,H);if(L){let bd=Infinity;for(const [x,y] of L.pts){const d=Math.hypot(x-bx,y-by);if(d<bd){bd=d;tx=x;ty=y;}}}}
+      const len=Math.hypot(tx-bx,ty-by),r=h/2;if(len<=r+1)continue;
+      const sx=bx+(tx-bx)*r/len,sy=by+(ty-by)*r/len;
+      for(const [w,c,cl] of [[4,'#ffffff','ld-halo'],[1.75,groupFill(classes,p.issue_class),'ld']]){
+        const l=document.createElementNS('http://www.w3.org/2000/svg','line');
+        l.setAttribute('x1',sx.toFixed(1));l.setAttribute('y1',sy.toFixed(1));l.setAttribute('x2',tx.toFixed(1));l.setAttribute('y2',ty.toFixed(1));
+        l.setAttribute('stroke',c);l.setAttribute('stroke-width',w);l.setAttribute('class',cl);l.dataset.pin=id;g.append(l);}
+    }
   }
   function setPinsShown(on){
     pinsShown=!!on;try{localStorage.setItem('aad-pins-shown',pinsShown?'1':'0');}catch(e){}
@@ -441,6 +583,18 @@ export function initReview(V){
     occTimer=setTimeout(()=>{occTimer=0;const s=occlusionSig();runOcclusion();occSig=s;},OCC_SETTLE_MS);   // after the camera stops
     if(live&&t-occAt>=OCC_LIVE_MS){runOcclusion();occSig=sig;}
   }
+  function markOccluded(el,on){
+    if(el.classList.contains('occluded')===on)return;
+    el.classList.toggle('occluded',on);el.title=(el.dataset.title||'')+(on?'\n'+OCC_TITLE:'');
+  }
+  const occludedNow=id=>dimOcc&&occluded.has(id)&&id!==hotPin;
+  function setDimOcc(on){
+    dimOcc=!!on;try{localStorage.setItem('aad-dim-occluded',dimOcc?'1':'0');}catch(e){}
+    $('opt-dim-occluded').checked=dimOcc;
+    if(!dimOcc){occluded.clear();for(const [,o] of markers)markOccluded(o.element,false);}
+    occSig='';V.dirty();
+  }
+  $('opt-dim-row').hidden=false;$('opt-dim-occluded').checked=dimOcc;$('opt-dim-occluded').onchange=e=>setDimOcc(e.target.checked);
   function runOcclusion(){
     occAt=performance.now();occRuns++;
     const r=V.canvas.getBoundingClientRect(),c=V.cam,eps=Math.max(0.3,V.bbox.getSize(_h).length()*0.002);let changed=false;
@@ -453,8 +607,9 @@ export function initReview(V){
           if(h){const da=-_o.clone().applyMatrix4(c.matrixWorldInverse).z,dh=-_h.copy(h.point).applyMatrix4(c.matrixWorldInverse).z;occ=dh<da-eps;}
         }
       }
+      if(!dimOcc)occ=false;
       if(occ!==occluded.has(id)){changed=true;if(occ)occluded.add(id);else occluded.delete(id);}
-      o.element.classList.toggle('occluded',occ&&id!==hotPin);
+      markOccluded(o.element,occ&&id!==hotPin);
     }
     if(changed)V.dirty();
   }
@@ -948,12 +1103,15 @@ export function initReview(V){
     const out=document.createElement('canvas');out.width=W;out.height=H;const g=out.getContext('2d');g.drawImage(src,0,0);
     const marks=[],v=new THREE.Vector3(),SEV={high:'#d1242f',medium:'#bc4c00',low:'#9a6700'};
     for(const o of edgeOverlays()){if(!o.pin||!V.effVisible(o.mesh))continue;const p=S.pins.find(x=>x.id===o.pin);
-      for(const run of V.edgeScreen(o,src.clientWidth,src.clientHeight))for(const [w,c] of [[7,'#ffffff'],[3.5,groupFill(classes,p.issue_class)]]){
-        g.beginPath();run.forEach(([x,y],i)=>i?g.lineTo(x*dpr,y*dpr):g.moveTo(x*dpr,y*dpr));g.lineWidth=w*dpr;g.strokeStyle=c;g.lineCap=g.lineJoin='round';g.stroke();}}
+      const old=o.mod==='stale';
+      for(const run of V.edgeScreen(o,src.clientWidth,src.clientHeight))for(const [w,c] of old?[[4,'#ffffffaa'],[1.75,groupFill(classes,p.issue_class)]]:[[7,'#ffffff'],[3.5,groupFill(classes,p.issue_class)]]){
+        g.beginPath();run.forEach(([x,y],i)=>i?g.lineTo(x*dpr,y*dpr):g.moveTo(x*dpr,y*dpr));g.lineWidth=w*dpr;g.strokeStyle=c;g.lineCap=g.lineJoin='round';
+        g.setLineDash(old?[5*dpr,4*dpr]:[]);g.stroke();g.setLineDash([]);}}
     for(const p of S.pins){
       const o=markers.get(p.id);if(!o||!o.visible||p.status==='resolved')continue;
       o.getWorldPosition(v);v.project(V.cam);if(v.z<-1||v.z>1)continue;
-      const x=(v.x*0.5+0.5)*W,y=(0.5-v.y*0.5)*H-21*dpr;if(x<0||y<0||x>W||y>H)continue;
+      const f=fan.get(p.id),ax=(v.x*0.5+0.5)*W,ay=(0.5-v.y*0.5)*H,x=ax+(f?f.dx*dpr:0),y=ay-21*dpr+(f?f.dy*dpr:0);if(x<0||y<0||x>W||y>H)continue;
+      if(f){g.beginPath();g.moveTo(x,y);g.lineTo(ax,ay);g.lineWidth=1.75*dpr;g.strokeStyle=groupFill(classes,p.issue_class);g.stroke();}
       const r=15*dpr;g.beginPath();g.arc(x,y,r,0,Math.PI*2);g.fillStyle=groupFill(classes,p.issue_class);g.fill();
       g.lineWidth=3*dpr;g.strokeStyle='#ffffff';g.stroke();g.fillStyle='#ffffff';g.font=`800 ${15*dpr}px -apple-system,system-ui,sans-serif`;
       g.textAlign='center';g.textBaseline='middle';g.fillText(String(p.n),x,y+1*dpr);marks.push({n:p.n,x:+(x/dpr).toFixed(1),y:+(y/dpr).toFixed(1),pin:p.id});
@@ -1012,7 +1170,9 @@ export function initReview(V){
   function edgeOverlays(){
     const out=[];
     if(pinsShown||forceShow)for(const p of S.pins){if(p.kind!=='edge'||!p.edge||p.status==='resolved'||!p.anchor)continue;const k=keyFor(p.anchor.part);
-      if(k)out.push({mesh:meshOf(k),pts:p.edge.points,cls:'sev-'+p.severity+' g-'+groupOf(classes,p.issue_class),pin:p.id});}
+      if(!k)continue;const m=edgeMatch(p),cls='sev-'+p.severity+' g-'+groupOf(classes,p.issue_class);
+      if(m?.changed){if(oldEdgeShown(p))out.push({mesh:meshOf(k),pts:p.edge.points,cls,mod:'stale',pin:p.id,label:'edge as pinned',at:p.edge.midpoint||p.edge.points[0]});}
+      else out.push({mesh:meshOf(k),pts:m?m.pts:p.edge.points,cls,pin:p.id,mod:occludedNow(p.id)?'occluded':''});}
     if(!card.hidden&&dialogCtx?.kind==='edge'&&dialogCtx.info.mesh)out.push({mesh:dialogCtx.info.mesh,pts:dialogCtx.edge.points,cls:'draft'});
     if(mode==='measure'&&measA?.type==='edge')out.push({mesh:measA.mesh,pts:measA.chain.pts,cls:'draft'});
     return out;
@@ -1023,12 +1183,12 @@ export function initReview(V){
     return {open:true,kind:dialogCtx?.kind,card:{x:cr.x,y:cr.y,w:cr.width,h:cr.height},
       point:anchorPx?{x:hr.x+anchorPx.x,y:hr.y+anchorPx.y}:null,dragged:!!cardOffset};
   }
-  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,setPinsShown,pinsShown:()=>pinsShown,afterRender:()=>{placeCard();holoTheme();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
-    state:()=>({mode,followParent,repin:RP.state(),pins:S.pins.map(p=>({id:p.id,n:p.n,status:p.status,issue_class:p.issue_class,group:groupOf(classes,p.issue_class),repinned:RP.isRepinned(p),history:(p.history||[]).length,kind:p.kind,parts:p.parts.length,orphaned:orphaned(p),measure:!!p.measure,parent:p.parent||null,attempts:p.attempts||0})),
+  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,setPinsShown,pinsShown:()=>pinsShown,afterRender:()=>{placeCard();holoTheme();drawLeaders();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
+    state:()=>({mode,followParent,repin:RP.state(),pins:S.pins.map(p=>({id:p.id,n:p.n,status:p.status,issue_class:p.issue_class,group:groupOf(classes,p.issue_class),repinned:RP.isRepinned(p),history:(p.history||[]).length,kind:p.kind,parts:p.parts.length,orphaned:orphaned(p),measure:!!p.measure,parent:p.parent||null,attempts:p.attempts||0,edgeChanged:edgeChanged(p),oldEdge:p.kind==='edge'?oldEdgeShown(p):null})),
       pinChanges:pinChanges?{against:pinChanges.against,unchanged:Object.keys(pinChanges.pins||{}).filter(id=>{const p=S.pins.find(x=>x.id===id);return p&&unchangedHere(p);})}:null,
       next:S.next,scope:S.scope.map(p=>p.node),measurements:S.meas.map(m=>m.distance),measureKinds:S.meas.map(m=>m.kind||'point_point'),measPending:measA?measA.type:null,measKeep:keepVis,decisions:S.decisions,tourIdx,
       diff:diff?{against:diff.a.id,kind:diff.a.kind||null,b:diff.b.build,summary:diff.summary,collateral:diff.collateral,tinted:V.meshList.filter(m=>tintFor(m.userData.key)).length}:null,
-      editor:editorState(),pinsShown,occluded:[...occluded].filter(id=>markers.get(id)?.visible),occRuns,partHidden:[...partHidden].filter(([,v])=>v).map(([k])=>k),ghost:ghost.children.length,ghostVisible:ghost.visible,
+      editor:editorState(),pinsShown,occluded:[...occluded].filter(id=>markers.get(id)?.visible),occRuns,dimOccluded:dimOcc,fanRuns,fanned:[...fan.keys()],partHidden:[...partHidden].filter(([,v])=>v).map(([k])=>k),ghost:ghost.children.length,ghostVisible:ghost.visible,
       revisions:{selected:revSel,preselected:revPre,peek:revPeek,rows:(server?.baselines||[]).map(b=>({id:b.id,kind:b.kind,differ:revRows.find(r=>r.id===b.id)?.differ??null}))},
       holo:{visible:holo.visible,parts:new Set(holo.children.map(o=>o.userData.holoOf)).size,edges:holo.children.filter(o=>o.userData.holo==='edge').length,
         wire:holo.children.filter(o=>o.userData.holo==='wire').length,kinds:[...new Set(holo.children.map(o=>o.userData.holo))].sort(),

@@ -4,9 +4,9 @@
   --acc:#1f6feb;--acc2:#388bfd;--ok:#3fb950;--bad:#f85149;--warn:#e3b341;--moved:#58a6ff;--added:#3fb950;--scope:#2ea043}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.35 -apple-system,system-ui,sans-serif;overflow:hidden}
-body{display:grid;grid-template-columns:320px minmax(0,1fr) var(--panel-w,380px);grid-template-rows:auto auto minmax(0,1fr) auto;
+body{display:grid;grid-template-columns:var(--side-w,320px) minmax(0,1fr) var(--panel-w,380px);grid-template-rows:auto auto minmax(0,1fr) auto;
   grid-template-areas:"top top top" "viewbar viewbar viewbar" "side view panel" "bottom bottom bottom";height:100vh}
-body.no-panel{grid-template-columns:320px minmax(0,1fr);grid-template-areas:"top top" "viewbar viewbar" "side view" "bottom bottom"}
+body.no-panel{grid-template-columns:var(--side-w,320px) minmax(0,1fr);grid-template-areas:"top top" "viewbar viewbar" "side view" "bottom bottom"}
 .ic{display:inline-block;width:18px;height:18px;flex:none;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
 .i-pointer{--ic:url(vendor/tabler-icons/pointer.svg)}.i-map-pin{--ic:url(vendor/tabler-icons/map-pin.svg)}
 .i-marquee-2{--ic:url(vendor/tabler-icons/marquee-2.svg)}.i-ruler-measure{--ic:url(vendor/tabler-icons/ruler-measure.svg)}
@@ -105,13 +105,14 @@ input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--acc);fle
 .side-label.axis{letter-spacing:0;padding:1px 6px;border:none;font-size:14px}
 .side-label.axis.x{color:#b42318}.side-label.axis.y{color:#166534}.side-label.axis.z{color:#1d4ed8}
 .pin-marker{pointer-events:auto;cursor:pointer;display:flex;align-items:center;justify-content:center;min-width:28px;height:28px;padding:0 7px;border-radius:14px;
-  font:800 15px -apple-system,system-ui,sans-serif;color:#fff;background:#d1242f;border:2px solid #fff;box-shadow:0 2px 6px #0007}
-.pin-marker.sev-low{background:#9a6700}.pin-marker.sev-medium{background:#bc4c00}.pin-marker.sev-high{background:#d1242f}
-.pin-marker.resolved{background:#1a7f37}.pin-marker.orphan{background:#57606a;border-style:dashed}
+  font:800 15px -apple-system,system-ui,sans-serif;color:#fff;--pf:#d1242f;background:var(--pf);border:2px solid #fff;box-shadow:0 2px 6px #0007}
+.pin-marker.sev-low{--pf:#9a6700}.pin-marker.sev-medium{--pf:#bc4c00}.pin-marker.sev-high{--pf:#d1242f}
+.pin-marker.resolved{--pf:#1a7f37}.pin-marker.orphan{--pf:#57606a;border-style:dashed}
 .pin-marker.region{border-radius:6px}
 .pin-marker.hot{outline:3px solid #ffd43b}
-/* a pin whose point is behind other geometry from this camera: dimmed with a dashed ring (the selected one stays solid) */
-.pin-marker.occluded{opacity:.45;border-style:dashed;box-shadow:none}
+/* a pin whose point is behind other geometry from this camera: the fill dims to 70 percent with a dashed ring; the
+   white number stays fully opaque (the selected one stays solid; Options can turn the dimming off) */
+.pin-marker.occluded{background:color-mix(in srgb,var(--pf) 70%,transparent);border-style:dashed;box-shadow:none}
 .measure-label{font:700 13px ui-monospace,Menlo,monospace;color:#fff;background:#0d1117e8;border:1px solid #79c0ff;border-radius:6px;padding:3px 7px;white-space:nowrap}
 .measure-dot{width:10px;height:10px;border-radius:5px;background:#ffd43b;border:2px solid #0d1117}
 
@@ -233,7 +234,7 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 #pin-grip{display:flex;align-items:center;gap:8px;cursor:move;user-select:none;margin:-2px 0 2px}
 #pin-grip span{flex:1}
 #pin-close{padding:3px 5px;background:none;border-color:transparent}
-#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:7;overflow:visible}
+#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;overflow:visible}   /* under the pin markers (#labels): an edge line never crosses a number */
 #edge-lines polyline{fill:none;stroke-linecap:round;stroke-linejoin:round}
 #edge-lines .edge-halo{stroke:#ffffff;stroke-width:7;opacity:.85}
 #edge-lines .edge-line{stroke-width:3.5}
@@ -241,7 +242,7 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 #edge-lines .sev-high{stroke:#d1242f}#edge-lines .sev-medium{stroke:#bc4c00}#edge-lines .sev-low{stroke:#9a6700}
 #pin-leader{stroke:#1f6feb;stroke-width:2.5;stroke-dasharray:5 4;visibility:hidden}
 #overlay.leader #pin-leader{visibility:visible}
-.pin-marker.draft{background:#1f6feb;outline:3px solid #ffd43b}
+.pin-marker.draft{--pf:#1f6feb;outline:3px solid #ffd43b}
 .dlgh{font-weight:700;font-size:17px}
 #options-pop{position:fixed;z-index:25;width:330px;padding:10px 12px;background:var(--panel);border:1px solid #64748b;border-radius:8px;box-shadow:0 6px 24px #0006;display:flex;flex-direction:column;gap:6px}
 #options-pop[hidden]{display:none}
@@ -266,7 +267,9 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 @media (max-width:1359px){#modes button span{display:none}}
 @media (max-width:1099px){#send span{display:none}}
 #send[hidden]{display:none}
-@media (max-width:900px){body,body.no-panel{grid-template-columns:1fr;grid-template-rows:auto auto 45vh auto auto auto;grid-template-areas:"top" "viewbar" "view" "panel" "side" "bottom";overflow:auto;height:auto}
+@media (max-width:900px){.split,.split-h,.rail,body.side-off .rail{display:none!important}body.side-off #side{display:flex}
+  body.panel-off #panel:not([hidden]){display:flex}
+  body,body.no-panel{grid-template-columns:1fr;grid-template-rows:auto auto 45vh auto auto auto;grid-template-areas:"top" "viewbar" "view" "panel" "side" "bottom";overflow:auto;height:auto}
   html,body{overflow:auto}#top{flex-wrap:wrap}#top .tools button span{display:none}}
 
 /* orbit pivot marker (only while an orbit runs) */
@@ -307,8 +310,8 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 /* class groups (pin_groups.js): Change request violet, Problem orange, Note to the agent teal; each distinct from
    resolved green and not-fixed red, white ring for dark viewports */
 .i-map-pin-exclamation{--ic:url(vendor/tabler-icons/map-pin-exclamation.svg)}
-.pin-marker.g-change_request{background:#7c3aed}.pin-marker.g-problem,.pin-marker.g-other{background:#b35900}.pin-marker.g-note{background:#0e7490}
-.pin-marker.orphan{background:#57606a}
+.pin-marker.g-change_request{--pf:#7c3aed}.pin-marker.g-problem,.pin-marker.g-other{--pf:#b35900}.pin-marker.g-note{--pf:#0e7490}
+.pin-marker.orphan{--pf:#57606a}
 .pin-marker.repinned{box-shadow:0 0 0 3px #f85149,0 2px 6px #0007}
 #edge-lines .g-change_request{stroke:#7c3aed}#edge-lines .g-note{stroke:#0e7490}#edge-lines .g-problem,#edge-lines .g-other{stroke:#b35900}
 #pin-chips{display:flex;flex-direction:column;flex-wrap:nowrap;gap:5px}
@@ -377,3 +380,47 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 .chip.parthidden{background:#30363d;color:var(--fg);border:1px dashed #8b949e}.chip.parthidden[hidden]{display:none}
 /* the pin card's location line wraps between fields, never inside a number or a coordinate triple */
 #pin-where{word-break:normal;overflow-wrap:normal}#pin-where .fld{white-space:nowrap}#pin-where .fld:first-child{white-space:normal;overflow-wrap:anywhere}
+/* a pinned edge that no longer exists in this build: history, not a live highlight (thin, dashed, muted, labelled) */
+#edge-lines .edge-halo.stale{stroke-width:3.5;opacity:.5;stroke-dasharray:6 5}
+#edge-lines .edge-line.stale{stroke-width:1.75;stroke-dasharray:6 5;opacity:.75}
+#edge-lines text.edge-label{font:600 12px -apple-system,system-ui,sans-serif;fill:#ffffff;stroke:#0d1117;stroke-width:3px;paint-order:stroke;stroke-linejoin:round}
+.item .edge-stale{display:flex;gap:6px;align-items:flex-start;margin-top:4px;font-size:13px;color:#e3b341}
+.item .edge-stale .ic{width:15px;height:15px;margin-top:1px}
+.item .old-edge{display:inline-flex;align-items:center;gap:6px;margin-top:4px;font-size:13px;color:var(--fg);cursor:pointer}
+/* an occluded pin's edge highlight matches its marker: dashed and dimmed the same way */
+#edge-lines .edge-line.occluded{stroke-dasharray:7 5;opacity:.7}
+#edge-lines .edge-halo.occluded{stroke-dasharray:7 5;opacity:.6}
+/* resizable panes (view.js): two column dividers over the panel borders (6 px hit area, the 1 px border line
+   brightens on hover or focus), a row divider between the part tree and the block below it, and slim rails that
+   bring a collapsed panel back */
+.split{grid-area:view;z-index:12;width:6px;align-self:stretch;position:relative;cursor:col-resize;touch-action:none;outline:none}
+#split-l{justify-self:start;margin-left:-3px}
+#split-r{justify-self:end;margin-right:-3px}
+.split::after{content:"";position:absolute;top:0;bottom:0;left:2.5px;width:1px;background:transparent;pointer-events:none}
+.split:hover::after,.split.drag::after,.split:focus-visible::after{background:#58a6ff;left:2px;width:2px}
+.split .fold{position:absolute;top:50%;width:18px;height:36px;margin-top:-18px;padding:0;display:flex;align-items:center;justify-content:center;
+  background:var(--panel);border:1px solid var(--line);color:var(--fg);cursor:pointer;opacity:.85}
+#split-l .fold{left:3px;border-radius:0 6px 6px 0}
+#split-r .fold{right:3px;border-radius:6px 0 0 6px}
+.split .fold:hover{opacity:1;border-color:#58a6ff}
+.split .fold .ic{width:14px;height:14px}
+body.no-panel #split-r,body.no-panel #rail-r{display:none}
+.rail{display:none;align-self:stretch;justify-content:center;align-items:flex-start;padding:10px 0 0;margin:0;border:none;border-radius:0;
+  background:var(--panel);color:var(--fg);cursor:pointer;min-width:0}
+.rail:hover{background:var(--panel2)}
+#rail-l{grid-area:side;border-right:1px solid var(--line)}
+#rail-r{grid-area:panel;border-left:1px solid var(--line)}
+body.side-off #side,body.side-off #split-l{display:none}
+body.side-off #rail-l{display:flex}
+body:not(.no-panel).panel-off #panel,body.panel-off #split-r{display:none}
+body:not(.no-panel).panel-off #rail-r{display:flex}
+.split-h{flex:none;height:6px;margin:-3px 0;position:relative;z-index:2;cursor:row-resize;touch-action:none;outline:none}
+.split-h::after{content:"";position:absolute;left:0;right:0;top:2.5px;height:1px;background:transparent;pointer-events:none}
+.split-h:hover::after,.split-h.drag::after,.split-h:focus-visible::after{background:#58a6ff;top:2px;height:2px}
+#side-low{flex:none;display:flex;flex-direction:column;min-height:0}
+#side-low>*{flex:none}
+body.tree-sized #tree{flex:none}
+body.tree-sized #side-low{flex:1 1 0;overflow:auto}
+body.pane-drag,body.pane-drag *{user-select:none!important;-webkit-user-select:none!important}
+body.pane-drag{cursor:col-resize}
+body.pane-drag.rows{cursor:row-resize}

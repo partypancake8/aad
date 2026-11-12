@@ -55,6 +55,8 @@
   </section>
   <div class="row"><button id="showall"><i class="ic i-eye"></i>Show all</button><button id="hidefast"><i class="ic i-eye-off"></i>Hide fasteners</button><button id="collapse"><i class="ic i-list-tree"></i>Collapse</button></div>
   <div id="tree"></div>
+  <div id="split-t" class="split-h" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Resize the part tree" title="Drag to give the tree more or less height; double-click resets"></div>
+  <div id="side-low">
   <section class="ctl" id="maskbox" hidden>
     <div class="h">Move <span id="mname"></span> <span id="mcount"></span></div>
     <div class="row2"><button id="mT" class="on" title="W">Move</button><button id="mR" title="E">Rotate</button><button id="mS" title="R">Scale</button><button id="mSp" title="X: world or local axes">world</button><label title="scale all axes together"><input type="checkbox" id="lock" checked> uniform</label></div>
@@ -80,7 +82,14 @@
     <div class="wprint" id="weight-print-row"><label class="wg"><input type="checkbox" id="weight-printed"> Printed</label><label class="wg">infill <input type="number" id="weight-infill" min="0" max="100" step="5" value="20" aria-label="Infill percent"> %</label><label class="wg">walls <input type="number" id="weight-walls" min="0" max="10" step="0.1" value="1.2" aria-label="Wall thickness mm"> mm</label></div>
     <div id="weight-out" aria-live="polite"></div>
   </section>
+  </div>
 </aside>
+<button id="rail-l" class="rail" title="Show the left panel (,)" aria-label="Show the left panel"><i class="ic i-chevron-right"></i></button>
+<div id="split-l" class="split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the left panel" aria-valuemin="200" aria-valuemax="520"
+  title="Drag to resize the left panel; Left and Right arrows move it; double-click resets"><button class="fold" title="Hide the left panel (,)" aria-label="Hide the left panel"><i class="ic i-chevron-left"></i></button></div>
+<div id="split-r" class="split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the right panel" aria-valuemin="300" aria-valuemax="720"
+  title="Drag to resize the right panel; Left and Right arrows move it; double-click resets"><button class="fold" title="Hide the right panel (.)" aria-label="Hide the right panel"><i class="ic i-chevron-right"></i></button></div>
+<button id="rail-r" class="rail" title="Show the right panel (.)" aria-label="Show the right panel"><i class="ic i-chevron-left"></i></button>
 <main id="view"><canvas id="c"></canvas><div id="camnote" hidden><span id="camnote-t"></span></div><div id="tip"></div><div id="modehint" hidden></div><div id="rect" hidden></div><div id="triad-label">X red, Y green, Z blue</div>
 <div id="cube-nav" role="toolbar" aria-label="View cube">
   <button id="cube-home" title="Home view (Shift+H)" aria-label="Home view"><i class="ic i-home"></i></button>
@@ -91,7 +100,7 @@
   <button id="cube-right" class="tri" title="Rotate to the face on the right" aria-label="Rotate to the face on the right"><i class="ic i-caret-right"></i></button>
   <button id="cube-down" class="tri" title="Rotate to the face below" aria-label="Rotate to the face below"><i class="ic i-caret-down"></i></button>
 </div>
-<svg id="overlay" aria-hidden="true"><g id="edge-lines"></g><line id="pin-leader" x1="0" y1="0" x2="0" y2="0"></line></svg>
+<svg id="overlay" aria-hidden="true"><g id="edge-lines"></g><g id="pin-leaders"></g><line id="pin-leader" x1="0" y1="0" x2="0" y2="0"></line></svg>
 <div id="pin-dialog" class="pin-card" role="dialog" aria-modal="false" aria-labelledby="pin-dialog-h" hidden>
     <div class="dlgh" id="pin-grip" title="Drag to move"><span id="pin-dialog-h">New pin</span><button id="pin-close" title="Close without saving (Esc)" aria-label="Close"><i class="ic i-x"></i></button></div>
     <div class="mono" id="pin-where"></div>
@@ -181,6 +190,7 @@
     <label title="Any colour">Custom <input type="color" id="bg-custom" value="#e5e7eb"></label></div>
   <div class="oh">Display</div>
   <label><input type="checkbox" id="opt-edges"> Feature edges</label>
+  <label id="opt-dim-row" title="Pins whose point is behind other geometry from this view draw with a dimmed fill and a dashed ring" hidden><input type="checkbox" id="opt-dim-occluded" checked> Dim pins behind geometry</label>
 </div>
 <div id="part-info" role="dialog" aria-modal="false" aria-labelledby="part-info-h" hidden>
   <div class="dlgh"><i class="ic i-info-circle"></i><span id="part-info-h">Part info</span><button id="part-info-copy" title="Copy these lines"><i class="ic i-clipboard-copy"></i><span>Copy</span></button><button id="part-info-close" title="Close (Esc)" aria-label="Close"><i class="ic i-x"></i></button></div>

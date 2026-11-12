@@ -17,6 +17,7 @@ import os
 import sys
 
 from . import diff as D
+from .edges import CHANGED_LINE, edge_changes
 from .schema import SCHEMA
 from .keep import keep_changes, keep_pins
 from .store import Store, build_id, escalated_first, find_project, hhmm, is_repinned, issue_classes, with_reason
@@ -39,6 +40,8 @@ def _pin_line(p, orphaned):
     elif p.get("parts"):
         where = f"region of {len(p['parts'])} part(s): " + ", ".join(x["node"] for x in p["parts"][:6])
     tag = " ORPHANED (part missing in the current build)" if orphaned else ""
+    if p.get("edge_changed"):
+        tag += f"\n      EDGE CHANGED: {CHANGED_LINE}"
     st = "" if p["status"] == "open" else f" [{p['status'].upper()}]"
     if p["status"] == "not_fixed":
         st = f" [NOT FIXED, attempt {p.get('attempts') or 1}]"
@@ -96,10 +99,20 @@ def status(store):
     cur = store.current() or {}
     parts = set(cur.get("parts") or [])
     open_pins, classes = [], issue_classes()
+    files = [f for f in cur.get("files") or [] if os.path.exists(f)]
+    try:
+        ec = edge_changes(files, store.pins("open"), cur.get("build"))
+    except Exception as e:                   # a model that cannot be read leaves the pins as they are
+        print(f"edge check skipped: {e}", file=sys.stderr)
+        ec = {}
     for p in escalated_first(store.pins("open")):
         p = with_reason(p, classes)
         nodes = [p["anchor"]["part"]["node"]] if p.get("anchor") else [x["node"] for x in p.get("parts") or []]
         q = dict(p, orphaned=bool(parts) and any(n not in parts for n in nodes))
+        if p["id"] in ec:
+            q["edge_changed"] = ec[p["id"]]["edge_changed"]
+            if q["edge_changed"]:
+                q["edge_note"] = CHANGED_LINE
         open_pins.append(q)
     all_pins = store.pins()
     b, kind, label = store.default_baseline(cur.get("build"))

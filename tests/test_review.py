@@ -297,6 +297,34 @@ def test_edge_pin_validates_and_prints(tmp_path):
     assert "edge 20.01 mm from (0.0, 0.0, 5.0) to (20.0, 0.0, 5.5)" in cli("--project", str(tmp_path))
 
 
+
+def test_edge_pin_on_a_rebuilt_model_is_rematched(tmp_path):
+    """An edge pin made on another build: the stored polyline is matched against the part's current feature edges.
+    The same edge (here: a box edge after an unrelated rebuild) matches; a widened plate no longer has it."""
+    from aad.review.edges import CHANGED_LINE, edge_changes
+    same, wide = tmp_path / "same.glb", tmp_path / "wide.glb"
+    write_parts(same, {"plate": box((0, 0, 0), (10, 10, 2)), "post": box((0, 0, 6), (2, 2, 10))})
+    write_parts(wide, {"plate": box((0, 0, 0), (14, 10, 2))})
+    edge = dict(points=[[-5, -5, 1], [5, -5, 1]], length_mm=10.0, start=[-5, -5, 1], end=[5, -5, 1],
+                midpoint=[0, -5, 1], direction=[1, 0, 0])
+    an = dict(part=dict(key="m > plate", node="plate", component="plate", file=0, path=["m", "plate"]),
+              local=[0, -5, 1], normal_local=[0, -1, 0], world=[0, -5, 1], normal_world=[0, -1, 0])
+    p = pin(1, kind="edge", edge=edge, anchor=an, build="0ldbuild0000")
+    assert edge_changes([str(same)], [p], "newbuild") == {"p1": dict(edge_changed=False, mean_mm=0.0, max_mm=0.0)}
+    assert edge_changes([str(wide)], [p], "newbuild")["p1"]["edge_changed"] is True
+    assert edge_changes([str(wide)], [p], "0ldbuild0000") == {}, "a pin on the current build is not re-matched"
+    st = Store(tmp_path / "proj")
+    st.replace_pins([p, pin(2)])
+    st.set_current("plate", [str(wide)], build_id([str(wide)]), ["plate"])
+    s = json.loads(cli("--project", str(tmp_path / "proj"), "--json"))
+    q = {x["id"]: x for x in s["open_pins"]}
+    assert q["p1"]["edge_changed"] is True and q["p1"]["edge_note"] == CHANGED_LINE and "edge_changed" not in q["p2"]
+    assert q["p1"]["anchor"] == an and q["p1"]["edge"] == edge, "the stored anchor and edge are untouched"
+    assert "EDGE CHANGED: " + CHANGED_LINE in cli("--project", str(tmp_path / "proj"))
+    st.set_current("plate", [str(same)], build_id([str(same)]), ["plate", "post"])
+    s = json.loads(cli("--project", str(tmp_path / "proj"), "--json"))
+    assert s["open_pins"][0]["edge_changed"] is False and "EDGE CHANGED" not in cli("--project", str(tmp_path / "proj"))
+
 # ---- viewer routes ----
 def test_viewer_review_routes(tmp_path):
     from aad.viewer.server import Sources, Viewer, _bind, load_versions

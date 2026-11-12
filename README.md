@@ -185,6 +185,17 @@ The view cube snaps to a face, edge or corner on click and orbits live on drag. 
 sits at its top left, two roll arrows at its top right turn the view 90 degrees, and a triangle on each side
 steps to the adjacent face. Each move is one undo step.
 
+Drag the divider between the left panel and the view (200 to 520 px) or between the view and the right panel
+(300 to 720 px) to resize them; the view keeps at least 360 px. A focused divider moves 16 px per arrow key, a
+double-click resets it, and the divider under the part tree sets the tree's height. The chevron on a divider
+collapses that panel to a slim rail. Sizes are remembered in the browser (`aad-pane-*`).
+
+Edge pins made on an earlier build are matched against the current edges of their part. When the edge is gone,
+the pin's card says so, the selected pin draws the old edge thin and dashed as "edge as pinned", and
+`aad review` reports `edge_changed`. Pin markers that would overlap fan out with leaders to their points, and a
+pin behind other geometry keeps its number readable with a dimmed fill and a dashed ring (Options: Dim pins
+behind geometry).
+
 | Key | |
 |---|---|
 | V, P, G, M, S | Select, Pin, Region, Measure, Scope |
@@ -192,6 +203,7 @@ steps to the adjacent face. Each move is one undo step.
 | Shift+H, F | Home, fit selection |
 | `\` (hold) | show the selected old revision solid in place of the current model |
 | Delete | remove the measurement under the pointer |
+| `,` and `.` | collapse or bring back the left and right panel (`[` and `]` stay with Move) |
 | Esc | cancel the current step, then leave the tool |
 | Cmd/Ctrl+Z, Shift+Cmd/Ctrl+Z | undo, redo (camera moves, visibility, pins, scope, measurements and tour decisions) |
 
