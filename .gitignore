@@ -5,8 +5,8 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
-dist/
-build/
+/dist/
+/build/
 
 # node
 node_modules/

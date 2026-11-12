@@ -10,7 +10,7 @@ style.css next to this module. Routes:
                        kept) on any change
   /tree.json           part tree: from a --tree file (components[].tree_path) when one is given, else one node
                        per file or directory group with the GLB's own node names underneath
-  /views.json          camera buttons: a --views file when given (see docs/inputs.md), else fitted iso, front,
+  /views.json          camera buttons: a --views file when given (see docs/reference.md), else fitted iso, front,
                        right, back, top, bottom computed by the page. A view of kind "camera" (eye, axis, fisheye:
                        right, up, axis, sensor_px, f_px_per_rad, theta_max_rad, observer) is the lens image: a
                        cube map at the eye resampled per sensor pixel (equidistant); an optional overlay image
@@ -769,8 +769,8 @@ def add_args(p):
     p.add_argument("paths", nargs="*", help=".glb, .stl, .ply files or directories (one group each)")
     p.add_argument("--port", type=int, help="port on 127.0.0.1 (default 7891; --check picks a free one)")
     p.add_argument("--no-open", action="store_true", help="do not open a browser tab")
-    p.add_argument("--tree", help="JSON file with components[].tree_path for the part tree (see docs/inputs.md)")
-    p.add_argument("--views", help="JSON file with named camera buttons (see docs/inputs.md)")
+    p.add_argument("--tree", help="JSON file with components[].tree_path for the part tree (see docs/reference.md)")
+    p.add_argument("--views", help="JSON file with named camera buttons (see docs/reference.md)")
     p.add_argument("--versions", help="JSON manifest of named model versions; paths relative to the manifest")
     p.add_argument("--movable", metavar="NAME", help="group (directory basename) that gets the move gizmo and pose")
     p.add_argument("--save-to", metavar="POSE_JSON", help="pose file for --movable (default next to the first file)")
