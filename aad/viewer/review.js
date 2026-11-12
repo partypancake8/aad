@@ -537,9 +537,23 @@ export function initReview(V){
     if(key===revKey&&revRows.length)return;revKey=key;
     const f=revFetch=getJSON('/review/revisions.json').catch(e=>({rows:[],error:e.message}));
     const r=await f;if(f!==revFetch)return;
-    revRows=r.rows||[];$('rev-size').textContent=r.size_bytes!=null?`Stored revisions ${(r.size_bytes/1048576).toFixed(1)} MB, keeps ${r.keep} earlier builds`:'';
+    revRows=r.rows||[];$('rev-size').textContent=r.size_bytes!=null?`Stored revisions ${(r.size_bytes/1048576).toFixed(1)} MB`:'';
+    if(r.keep!=null){keepNow=r.keep;const ki=$('rev-keep');if(document.activeElement!==ki)ki.value=r.keep;
+      if(!keepSynced){keepSynced=true;const want=readKeep();if(want&&want!==r.keep){setKeep(want,false);return;}}}
     renderBaselines();
   }
+  // Stored builds to keep: the server default (AAD_KEEP_BUILDS or 10) until the reviewer sets it here; the value is kept in
+  // this browser and sent to the server on every load, so no environment variable is needed
+  const KEEP_KEY='aad-keep-builds';let keepSynced=false,keepNow=null;
+  const readKeep=()=>{try{const v=Number(localStorage.getItem(KEEP_KEY));return Number.isInteger(v)&&v>=1&&v<=50?v:null;}catch(e){return null;}};
+  async function setKeep(n,remember){
+    const ki=$('rev-keep');
+    if(!Number.isInteger(n)||n<1||n>50){toast('Stored builds to keep is a whole number from 1 to 50.',true,3000);if(keepNow!=null)ki.value=keepNow;return;}
+    let r;try{r=await post('/review/revisions/keep',{keep:n});}catch(e){return;}
+    if(remember){try{localStorage.setItem(KEEP_KEY,String(n));}catch(e){}}
+    ki.value=keepNow=r.keep;if(server)server.baselines=r.baselines;revKey='';renderBaselines();
+  }
+  $('rev-keep').addEventListener('change',e=>setKeep(Number(e.target.value),true));
   function renderBaselines(){
     const ol=$('rev-list');if(!ol)return;const bl=server?.baselines||[],cnt=new Map(revRows.map(r=>[r.id,r]));
     if(revSel&&!bl.some(b=>b.id===revSel))holoOff(false);

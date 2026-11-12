@@ -492,7 +492,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  if(D.collateral.length)assert.match(banner,/COLLATERAL/);ok(`diff vs ${bl}: ${s.changed} changed, ${s.moved} moved, ${s.added} added, ${s.removed} removed, ${D.collateral.length} collateral`);
  // More: tint, ghost baseline and unchanged too, all off by default; retention size and Clear old revisions
  assert.equal(await page.locator('#rev-more').isVisible(),false,'More starts collapsed');
- await page.locator('#rev-more-btn').click();assert.match(await page.locator('#rev-size').textContent(),/Stored revisions [\d.]+ MB, keeps \d+ earlier builds/);
+ await page.locator('#rev-more-btn').click();assert.match(await page.locator('#rev-size').textContent(),/Stored revisions [\d.]+ MB/);assert.match(await page.locator('#rev-keep').inputValue(),/^\d+$/,'Stored builds to keep shows the setting');
  await page.locator('#diff-tint').check();await page.waitForTimeout(200);assert((await st()).review.diff.tinted>=1,'Tint changes still tints');await page.locator('#diff-tint').uncheck();
  await page.locator('#diff-ghost').check();await page.waitForFunction(()=>viewer.review.state().ghost>0,null,{timeout:120000});
  await page.waitForTimeout(800);ok('ghost baseline');
@@ -1271,4 +1271,27 @@ async function checkPolish(X){
  if(await page.locator('#pin-dialog').isVisible())await page.locator('#pin-close').click();
  await page.locator('#modes [data-mode=select]').click();
  ok(`no "Diff tab" text; the pin card near the top-right flips clear of the view cube (pin at ${Math.round(near.x)},${Math.round(near.y)})`);
+ // Stored builds to keep: set in the Revisions tab's More row, applied on the server, remembered in this browser and
+ // sent again after the server forgets it (a restart)
+ const revs=()=>page.evaluate(async()=>(await fetch(new URL('review/revisions.json',location.href))).json());
+ await page.locator('#tabs [data-tab=diff]').click();await page.waitForTimeout(300);
+ if(!(await page.locator('#rev-keep').isVisible()))await page.locator('#rev-more-btn').click();
+ const rows0=(await revs()).rows.filter(r=>r.kind!=='version').length;
+ const k0=+(await page.locator('#rev-keep').inputValue());assert(k0>=1&&k0<=50,'the control starts at the server value '+k0);
+ await page.locator('#rev-keep').fill('2');await page.locator('#rev-keep').press('Enter');await page.locator('#rev-keep').blur();
+ await page.waitForFunction(()=>{try{return localStorage.getItem('aad-keep-builds')==='2';}catch(e){return false;}},null,{timeout:10000});
+ let rj=await revs();assert.equal(rj.keep,2,'the server keeps 2 earlier builds now');
+ const rows1=rj.rows.filter(r=>r.kind!=='version').length;   // 2 earlier builds plus up to 3 builds pinned by packets
+ assert(rows1<=Math.min(rows0,5),`older builds pruned to the setting (${rows0} -> ${rows1} stored builds)`);
+ await page.evaluate(()=>fetch(new URL('review/revisions/keep',location.href),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keep:10})}));
+ assert.equal((await revs()).keep,10,'a server that forgot the setting');
+ await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});
+ await page.locator('#tabs [data-tab=diff]').click();
+ for(let i=0;i<40&&(await revs()).keep!==2;i++)await page.waitForTimeout(250);
+ assert.equal((await revs()).keep,2,'the remembered value is sent again on load');
+ await page.locator('#rev-more-btn').click();await page.waitForTimeout(300);assert.equal(await page.locator('#rev-keep').inputValue(),'2');
+ await page.locator('#rev-keep').fill('0');await page.locator('#rev-keep').press('Enter');await page.waitForTimeout(500);
+ assert.equal((await revs()).keep,2,'0 is refused');assert.equal(await page.locator('#rev-keep').inputValue(),'2','the box goes back to 2');assert.equal(await page.evaluate(()=>localStorage.getItem('aad-keep-builds')),'2');
+ if(X.shots)await page.locator('#panel').screenshot({path:path.join(X.shots,'revisions-more-keep.png')});
+ ok('Stored builds to keep: 2 applied on the server and pruned, remembered in this browser, re-sent after a server reset, 0 refused');
 }

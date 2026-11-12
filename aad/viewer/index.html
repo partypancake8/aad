@@ -131,6 +131,7 @@
     <button id="rev-more-btn" class="morebtn" aria-expanded="false" aria-controls="rev-more"><i class="ic i-chevron-right"></i>More</button>
     <div id="rev-more" hidden>
       <div class="row2"><label><input type="checkbox" id="diff-tint"> Tint changes</label><label><input type="checkbox" id="diff-ghost"> Ghost baseline</label><label><input type="checkbox" id="diff-all"> Unchanged too</label></div>
+      <div class="row2"><label for="rev-keep" title="How many earlier builds stay as revisions; the reviewed builds and the current build always stay. Remembered in this browser; overrides the server default.">Stored builds to keep <input type="number" id="rev-keep" min="1" max="50" step="1" aria-label="Stored builds to keep"></label></div>
       <div class="row2"><span class="muted" id="rev-size"></span><span class="grow"></span><button id="rev-clear" title="Remove the kept earlier builds; the reviewed ones and the current build stay"><i class="ic i-trash"></i>Clear old revisions</button></div>
     </div>
   </section>

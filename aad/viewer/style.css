@@ -292,7 +292,9 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 #rev-list li.loading .sub::after{content:"  loading...";color:#7ee787}
 .rev-tools kbd{border:1px solid #64748b;border-radius:4px;padding:1px 6px;font:13px ui-monospace,monospace;color:var(--fg)}
 #rev-flick.on{background:#238636;border-color:#2ea043;color:#fff}
-.morebtn{margin-top:8px}.morebtn[aria-expanded=true] .ic{transform:rotate(90deg)}
+.morebtn{margin-top:8px}
+#rev-keep{width:calc(3ch + 14px);box-sizing:border-box;text-align:right;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:2px 5px;font:13px ui-monospace,Menlo,monospace;appearance:textfield;-moz-appearance:textfield}
+#rev-keep::-webkit-inner-spin-button,#rev-keep::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}.morebtn[aria-expanded=true] .ic{transform:rotate(90deg)}
 
 /* class groups (pin_groups.js): Change request violet, Problem orange, Note to the agent teal; each distinct from
    resolved green and not-fixed red, white ring for dark viewports */

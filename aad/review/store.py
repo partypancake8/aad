@@ -30,9 +30,30 @@ _lock = threading.RLock()
 _build_cache = {}
 
 
+_keep_override = None               # the viewer's "Stored builds to keep" control, for this server process
+
+
+def set_keep_builds(n):
+    """Override the number of earlier builds kept, for the rest of this process (the viewer's Revisions tab sets it;
+    None goes back to the environment default). Returns the value in force. ValueError outside 1 to 50."""
+    global _keep_override
+    if n is None:
+        _keep_override = None
+        return keep_builds()
+    if isinstance(n, bool) or not isinstance(n, (int, float, str)):
+        raise ValueError("keep must be a whole number from 1 to 50")
+    v = float(n)
+    if v != int(v) or not 1 <= v <= 50:
+        raise ValueError("keep must be a whole number from 1 to 50")
+    _keep_override = int(v)
+    return _keep_override
+
+
 def keep_builds():
-    """How many earlier (unreviewed) builds are kept: AAD_KEEP_BUILDS when set (1 to 50), else KEEP_BASELINES.
-    A large assembly's GLB can be 30 MB, so the default stays at 10."""
+    """How many earlier (unreviewed) builds are kept: the viewer's override when set, else AAD_KEEP_BUILDS when
+    set (1 to 50), else KEEP_BASELINES. A large assembly's GLB can be 30 MB, so the default stays at 10."""
+    if _keep_override is not None:
+        return _keep_override
     try:
         return max(1, min(50, int(os.environ.get("AAD_KEEP_BUILDS", KEEP_BASELINES))))
     except ValueError:

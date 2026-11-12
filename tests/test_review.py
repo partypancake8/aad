@@ -345,7 +345,16 @@ def test_viewer_review_routes(tmp_path):
                 get(bad)
         assert json.loads(get("/v/good/models.json")[1])["review"]["enabled"] is False
         assert os.path.exists(tmp_path / ".cadreview" / "current.json")
+        # the Revisions tab's "Stored builds to keep" overrides the environment default for this process
+        code, k = post("/review/revisions/keep", dict(keep=3))
+        assert code == 200 and k["keep"] == 3 and "baselines" in k
+        assert json.loads(get("/review/revisions.json")[1])["keep"] == 3
+        for bad in (0, 51, 2.5, "x", None, True):
+            assert post("/review/revisions/keep", dict(keep=bad))[0] == 400, bad
+        assert json.loads(get("/review/revisions.json")[1])["keep"] == 3
     finally:
+        from aad.review.store import set_keep_builds
+        set_keep_builds(None)
         srv.shutdown()
         srv.server_close()
         th.join()

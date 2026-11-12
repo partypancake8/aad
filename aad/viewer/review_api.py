@@ -261,6 +261,16 @@ class ReviewAPI:
             if path == "/review/revisions/clear":
                 gone = st.clear_old(self.current_build())
                 return 200, dict(removed=gone, baselines=self.baselines(), size_bytes=st.revisions_size())
+            if path == "/review/revisions/keep":
+                from ..review.store import set_keep_builds
+                try:
+                    if body.get("keep") is None:
+                        raise ValueError("keep must be a whole number from 1 to 50")
+                    n = set_keep_builds(body.get("keep"))
+                except (TypeError, ValueError) as e:
+                    return 400, dict(error=str(e))
+                st.prune()
+                return 200, dict(keep=n, baselines=self.baselines(), size_bytes=st.revisions_size())
             if path == "/review/camera":
                 st.set_camera(dict(camera=body.get("camera"), selection=body.get("selection")))
                 return 200, dict(ok=True)
