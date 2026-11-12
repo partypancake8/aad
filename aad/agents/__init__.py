@@ -2,6 +2,9 @@
 
   aad agent print [--claude | --codex]                         the skill text on stdout
   aad agent install [--claude] [--codex] [--user | --project DIR | --dir DIR] [--force]
+  aad agent install --hooks [--claude] [--codex] [--user | --project DIR | --settings FILE]   (see hooks.py)
+  aad agent install --mcp                                      print the MCP server config (registers nothing)
+  aad agent uninstall --hooks [--claude] [--codex] [--user | --project DIR | --settings FILE]
 
 One shared body (body.md) under a per-tool frontmatter (claude.md, codex.md), so both stay in step. The body ends
 with a local-notes section between two markers; install leaves it empty and keeps whatever an installed copy
@@ -98,6 +101,20 @@ def add_args(p):
                    help="project level: DIR/.claude/skills/aad/ and DIR/.agents/skills/aad/")
     w.add_argument("--dir", metavar="DIR", help="write DIR/claude/aad/SKILL.md and DIR/codex/aad/SKILL.md")
     ins.add_argument("--force", action="store_true", help="replace an existing different file")
+    ins.add_argument("--hooks", action="store_true",
+                     help="instead of the skill: add the hook that tells the agent when pins change "
+                          "(Claude Code: settings.json, Codex: hooks.json), additively, with a backup")
+    ins.add_argument("--mcp", action="store_true",
+                     help="print the MCP server config and registration command for each tool (changes nothing)")
+    w.add_argument("--settings", metavar="FILE", help="with --hooks: edit this settings file (one tool)")
+    un = sub.add_parser("uninstall", help="remove the aad hook entries from a settings file")
+    un.add_argument("--hooks", action="store_true", required=True, help="remove the `aad hook` entries")
+    un.add_argument("--claude", action="store_true", help="Claude Code")
+    un.add_argument("--codex", action="store_true", help="Codex")
+    w = un.add_mutually_exclusive_group()
+    w.add_argument("--user", action="store_true", help="user level (default)")
+    w.add_argument("--project", metavar="DIR", help="project level")
+    w.add_argument("--settings", metavar="FILE", help="this settings file (one tool)")
     return p
 
 
@@ -105,6 +122,15 @@ def run(a):
     if a.agent_cmd == "print":
         sys.stdout.write(render("codex" if a.codex else "claude"))
         return 0
+    if a.agent_cmd == "uninstall" or a.hooks or a.mcp:
+        from . import hooks
+        if getattr(a, "dir", None):
+            print("--dir is for the skill; use --settings FILE with --hooks")
+            return 2
+        return hooks.run(a)
+    if a.settings:
+        print("--settings goes with --hooks")
+        return 2
     tools = [t for t in TOOLS if getattr(a, t)] or list(TOOLS)
     if a.dir:
         mode, base = "dir", os.path.abspath(os.path.expanduser(a.dir))

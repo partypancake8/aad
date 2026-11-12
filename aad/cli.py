@@ -8,6 +8,11 @@
   aad demo [DIR] [--port N] [--no-open]        copy the bracket demo to DIR (default: a temp dir) and serve it
   aad agent install [--claude] [--codex]       install the /aad skill that orients Claude Code or Codex on aad
   aad agent print [--claude | --codex]         print that skill
+  aad agent install --hooks | --mcp            the pins-change hook (settings entries) / print the MCP config
+  aad hook claude | codex                      hook command: review context when the pins changed (stdin: hook JSON)
+  aad follow <project dir> | --list            sessions started in this directory follow that project
+  aad unfollow                                 forget this directory's follow mapping
+  aad mcp [--project DIR]                      stdio MCP server with the review tools
 """
 import argparse
 import os
@@ -66,7 +71,26 @@ def cmd_demo(a):
     return code
 
 
+def cmd_follow(a):
+    from . import follow
+    return follow.run_follow(a)
+
+
+def cmd_unfollow(a):
+    from . import follow
+    return follow.run_unfollow(a)
+
+
+def cmd_mcp(a):
+    from . import mcp
+    return mcp.serve(project=a.project)
+
+
 def main(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args[:1] == ["hook"]:                      # runs before every prompt: no viewer or numpy import
+        from . import hook
+        return hook.main(args[1:])
     ap = argparse.ArgumentParser(prog="aad", description="agent aided design: a review workspace for CAD written "
                                                          "by coding agents")
     ap.add_argument("--version", action="version", version=f"aad {__version__}")
@@ -85,7 +109,17 @@ def main(argv=None):
     from . import agents
     p = agents.add_args(sub.add_parser("agent", help="the /aad skill for Claude Code and Codex (install, print)"))
     p.set_defaults(fn=cmd_agent)
-    a = ap.parse_args(argv)
+    p = sub.add_parser("hook", help="hook command for Claude Code or Codex: review context when the pins changed")
+    p.add_argument("tool", choices=("claude", "codex"))
+    p = sub.add_parser("follow", help="sessions started in this directory follow a review project")
+    from . import follow
+    follow.add_args(p).set_defaults(fn=cmd_follow)
+    p = sub.add_parser("unfollow", help="forget this directory's follow mapping")
+    follow.add_args(p, unfollow=True).set_defaults(fn=cmd_unfollow)
+    p = sub.add_parser("mcp", help="stdio MCP server with the review tools")
+    p.add_argument("--project", help="default review project (default: from the working directory)")
+    p.set_defaults(fn=cmd_mcp)
+    a = ap.parse_args(args)
     return a.fn(a)
 
 
