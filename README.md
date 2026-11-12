@@ -53,16 +53,16 @@ vendored. It reads any GLB (and STL or PLY), runs on 127.0.0.1 and makes no netw
 
 <table>
 <tr>
-<td align="center"><img src="docs/media/edge-pin.png" width="440" alt="Placing an edge pin on a clamp ring: the whole edge is highlighted and the pin card floats beside it with the class groups"><br><sub>Pinning a feature edge. The card floats beside the pin and one click on a class saves it.</sub></td>
-<td align="center"><img src="docs/media/pin-card.png" width="440" alt="The pin card on the bracket demo with a note typed and the class chips in four groups"><br><sub>The pin card: change requests, problems, notes to the agent. The note is optional.</sub></td>
+<td align="center"><img src="docs/media/edge-pin.png" width="440" alt="Placing an edge pin on a clamp ring: the whole edge is highlighted and the compact pin card floats beside it with the recently used reasons"><br><sub>Pinning a feature edge. The card floats beside the pin and one click on a reason saves it.</sub></td>
+<td align="center"><img src="docs/media/pin-card.png" width="440" alt="The pin card on the bracket demo with a note typed, More reasons open with the class chips in four groups, and the severity chips"><br><sub>The pin card: the six reasons you used last, More reasons for change requests, problems and notes to the agent, a severity. The note is optional.</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="docs/media/scope-diff.png" width="440" alt="Revisions tab on a dark background comparing the current build with what was reviewed, the old geometry of the changed parts drawn as a green hologram over the current model"><br><sub>Since your last packet: two parts changed outside the scope lock, their old shape as a green hologram.</sub></td>
+<td align="center"><img src="docs/media/scope-diff.png" width="440" alt="Revisions tab comparing the current build with what was reviewed, the old geometry of the changed parts drawn as a green hologram over the current model"><br><sub>Since your last packet: the two parts that changed outside the scope lock carry your pins, so they are listed as pinned by you. Their old shape shows as a green hologram.</sub></td>
 <td align="center"><img src="docs/media/tour.png" width="440" alt="Tour tab with the agent's stops and Accept, Reject and Repin buttons"><br><sub>The agent's change tour. Each stop flies to its parts; accept, reject or repin.</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="docs/media/collateral.png" width="440" alt="Bracket demo with the base plate flagged as collateral and the bracket's thin wall warning"><br><sub>The bracket demo: the base plate changed outside the scope lock, and the bracket kept a 0.25 mm wall.</sub></td>
-<td align="center"><img src="docs/media/part-menu.png" width="440" alt="Right-click menu on a part with Select, Pin, Isolate, Hide, Part info, Measure and scope lock actions"><br><sub>Right-click a part to pin it, isolate it, measure from it or change the scope lock.</sub></td>
+<td align="center"><img src="docs/media/collateral.png" width="440" alt="Bracket demo with the base plate, which carries no pin, flagged as collateral and the bracket's thin wall warning"><br><sub>The bracket demo: the base plate changed outside the scope lock, and the bracket kept a 0.25 mm wall.</sub></td>
+<td align="center"><img src="docs/media/part-menu.png" width="440" alt="Right-click menu on a part seen through the clear drum, with Select, Pin, Pick the clear part in front, Isolate, Hide, Solo group, Fit to part, Part info, follow-up pin, Measure and scope lock actions"><br><sub>Right-click a part to pin it, isolate it, measure from it or change the scope lock.</sub></td>
 </tr>
 <tr>
 <td align="center"><img src="docs/media/weight.png" width="440" alt="A selected part with the weight estimate in the left panel showing solid and printed mass in PETG"><br><sub>Weight estimate for the selected part: solid and printed with infill and walls.</sub></td>
