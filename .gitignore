@@ -15,3 +15,6 @@ npm-debug.log*
 # misc
 .DS_Store
 out/
+
+# review state written by running the viewer inside this repo
+.cadreview/

@@ -1,0 +1,4 @@
+{"name": "Bracket demo", "default": "bad", "current": "bad", "versions": [
+  {"id": "good", "label": "Good", "description": "M5 hole concentric with the boss and the counterbore", "paths": ["good/bracket_demo.glb"]},
+  {"id": "bad", "label": "Planted bad edit", "description": "hole moved 5 mm, boss and counterbore did not; base plate hole moved outside the scope lock", "paths": ["bad/bracket_demo.glb"]}
+]}
