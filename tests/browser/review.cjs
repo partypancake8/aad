@@ -696,6 +696,14 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
    if(/\b[0-9a-f]{12}\b/.test(li.innerText))bad.push(li.dataset.pin+': a build hash in the card text');
    const h=li.querySelector('.hist');if(h&&!/^(reopened: part changed again|marked not fixed|resolved) at (\w{3} \d+ )?\d\d:\d\d$/.test(h.textContent))bad.push('status line '+h.textContent);
   }
+  // polish 3: every tab shows its whole label and badge, 4 px apart, inside the row (or the row scrolls with a fade)
+  const tabs=document.getElementById('tabs'),tr=R(tabs),tbs=[...tabs.querySelectorAll('button')].filter(vis);
+  for(const b of tbs){const r=R(b),bd=b.querySelector('.badge');
+   if(b.scrollWidth>b.clientWidth+0.5)bad.push('tab content overflows: '+b.dataset.tab);
+   if(bd&&vis(bd)&&R(bd).right>r.right-4)bad.push('tab badge at the edge: '+b.dataset.tab);
+   if(tabs.dataset.fit!=='3'&&(r.right>tr.right+0.5||r.left<tr.left-0.5))bad.push('tab cut off: '+b.dataset.tab);}
+  for(let i=1;i<tbs.length;i++){const g=R(tbs[i]).left-R(tbs[i-1]).right;if(g<3.5)bad.push('tabs touching: '+tbs[i-1].dataset.tab+' / '+tbs[i].dataset.tab+' gap '+g.toFixed(1));}
+  if(tabs.dataset.fit==='3'&&!tabs.classList.contains('more-right')&&!tabs.classList.contains('more-left'))bad.push('scrolling tab row without a fade');
   const top=document.getElementById('top'),tb=[...top.querySelectorAll('button')].filter(vis).map(b=>[b.id||b.textContent.trim(),R(b)]);
   if(R(top).height>60)bad.push('toolbar wraps: '+R(top).height);
   for(const [n,r] of tb)if(r.right>innerWidth-4||r.left<4)bad.push('toolbar clipped: '+n);
@@ -726,8 +734,16 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  if(SHOTS){const f=path.join(SHOTS,'pins-300px-panel.png');await page.locator('#panel').screenshot({path:f});shots.push(f);}
  await page.locator('#tabs [data-tab=diff]').click();await page.waitForTimeout(300);assert.deepEqual(await layout(),[],'diff at a 300 px panel');
  if(SHOTS){const f=path.join(SHOTS,'diff-300px-panel.png');await page.locator('#panel').screenshot({path:f});shots.push(f);}
+ // polish 3: the tab row degrades by steps (icons, then short labels, then scrolling) at every panel width
+ const fits=[];
+ for(const pw of [560,480,420,380,360,340,320,300]){
+  await page.evaluate(w=>document.body.style.setProperty('--panel-w',w+'px'),pw);await page.waitForTimeout(150);
+  assert.deepEqual(await layout(),[],`tabs and diff panel at a ${pw} px panel`);fits.push([pw,+(await page.evaluate(()=>document.getElementById('tabs').dataset.fit))]);
+ }
+ assert.equal(fits[0][1],0,'a wide panel shows icons and full labels');
+ assert(fits.every((f,i)=>i===0||f[1]>=fits[i-1][1]),'narrower panels never step back up: '+JSON.stringify(fits));
  await page.evaluate(()=>document.body.style.removeProperty('--panel-w'));await page.setViewportSize({width:1600,height:1050});
- ok('layout at 1280 and 1600 px and a 300 px panel: no clipped, touching or overflowing controls; pin actions on one line or two whole groups'+(SHOTS?' ('+shots.length+' screenshots)':''));
+ ok('layout at 1280 and 1600 px and a 300 px panel: no clipped, touching or overflowing controls; pin actions on one line or two whole groups; tab row fit levels by panel width '+JSON.stringify(fits)+(SHOTS?' ('+shots.length+' screenshots)':''));
  // ---- 6: weight estimate, Part info, entity Measure, deleting and clearing measurements (functions at the end) ----
  await checkWeight(page,ok);
  await checkMeasureEntities(page,ok);

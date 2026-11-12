@@ -111,9 +111,21 @@ input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--acc);fle
 
 #panel{grid-area:panel;display:flex;flex-direction:column;min-height:0;min-width:0;border-left:1px solid var(--line);background:var(--panel);container-type:inline-size}
 #panel[hidden]{display:none}
-#tabs{display:flex;gap:2px;padding:6px 6px 0;border-bottom:1px solid var(--line);min-width:0}
-#tabs button{border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;background:none;padding:7px 9px;font-size:14px;flex:0 1 auto;min-width:0;white-space:nowrap}
-@container (max-width:360px){#tabs .ic{display:none}#tabs button{padding:7px 8px}}
+/* tabs keep their full width (never squeezed under their content) with a 4 px gap; review.js fitTabs() sets
+   data-fit: 1 drops the icons, 2 also shortens Revisions to Revs and tightens the padding, 3 scrolls sideways with a
+   fade on the side that has more */
+#tabs{display:flex;gap:4px;padding:6px 6px 0;border-bottom:1px solid var(--line);min-width:0;overflow:hidden;scrollbar-width:none}
+#tabs::-webkit-scrollbar{display:none}
+#tabs button{border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;background:none;padding:7px 9px;font-size:14px;flex:none;white-space:nowrap}
+#tabs .ts{display:none}
+#tabs[data-fit="1"] .ic,#tabs[data-fit="2"] .ic,#tabs[data-fit="3"] .ic{display:none}
+#tabs[data-fit="2"] button,#tabs[data-fit="3"] button{padding:7px 7px}
+#tabs[data-fit="2"] .tl,#tabs[data-fit="3"] .tl{display:none}
+#tabs[data-fit="2"] .ts,#tabs[data-fit="3"] .ts{display:inline}
+#tabs[data-fit="3"]{overflow-x:auto}
+#tabs.more-right{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}
+#tabs.more-left{-webkit-mask-image:linear-gradient(to left,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to left,#000 calc(100% - 28px),transparent)}
+#tabs.more-left.more-right{-webkit-mask-image:linear-gradient(to right,transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to right,transparent,#000 28px,#000 calc(100% - 28px),transparent)}
 #tabs button.on{background:var(--panel2);border-color:var(--line);color:var(--fg)}
 .badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:#30363d;font-size:12px;text-align:center}
 .badge:empty{display:none}

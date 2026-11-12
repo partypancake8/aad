@@ -788,9 +788,25 @@ export function initReview(V){
   }
 
   // ---- tabs ----
-  function showTab(t){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+  function showTab(t){document.querySelectorAll('#tabs button').forEach(b=>{b.classList.toggle('on',b.dataset.tab===t);if(b.dataset.tab===t&&$('tabs').dataset.fit==='3')b.scrollIntoView({block:'nearest',inline:'nearest'});});
     for(const n of ['pins','diff','tour','issues'])$('tab-'+n).hidden=n!==t;}
   document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+  // the tab row never clips a label: it steps down until everything fits (0 icons and labels, 1 labels only,
+  // 2 short labels and tighter padding, 3 the same row scrolling sideways with a fade on the cut edge)
+  const tabsEl=$('tabs');let fitting=false;
+  function fitTabs(){
+    if(fitting)return;fitting=true;
+    try{
+      let lv=0;for(;lv<3;lv++){tabsEl.dataset.fit=String(lv);if(tabsEl.scrollWidth<=tabsEl.clientWidth+0.5)break;}
+      tabsEl.dataset.fit=String(lv);tabScrollEdges();
+    }finally{fitting=false;}
+  }
+  function tabScrollEdges(){const s=tabsEl.dataset.fit==='3';
+    tabsEl.classList.toggle('more-right',s&&tabsEl.scrollLeft+tabsEl.clientWidth<tabsEl.scrollWidth-1);tabsEl.classList.toggle('more-left',s&&tabsEl.scrollLeft>1);}
+  tabsEl.addEventListener('scroll',tabScrollEdges,{passive:true});
+  if(window.ResizeObserver)new ResizeObserver(()=>fitTabs()).observe(tabsEl);
+  new MutationObserver(()=>fitTabs()).observe(tabsEl,{subtree:true,childList:true,characterData:true});
+  fitTabs();
 
   // ---- send packet ----
   async function sendPacket(){
