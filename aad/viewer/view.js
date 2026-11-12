@@ -11,6 +11,7 @@ import {ViewportGizmo} from 'three-viewport-gizmo';
 import {computeBoundsTree,disposeBoundsTree,acceleratedRaycast} from 'three-mesh-bvh';
 import {CSS2DRenderer,CSS2DObject} from 'three/addons/renderers/CSS2DRenderer.js';
 import {initReview} from './review.js';
+import {initWeight} from './weight.js';
 import {TransformControls} from 'three/addons/controls/TransformControls.js';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {STLLoader} from 'three/addons/loaders/STLLoader.js';
@@ -76,7 +77,8 @@ Object.defineProperty(controls,'enableDamping',{get(){return controls.smoothTime
 // viewer options (navigation preset, background, edges): one localStorage entry; the page works without storage
 const OPT_KEY='aad-viewer-options';
 const OPTS=(()=>{let o={};try{o=JSON.parse(localStorage.getItem(OPT_KEY)||'{}')||{};}catch(e){o={};}
-  return {nav:o.nav==='classic'?'classic':'fusion',bg:typeof o.bg==='string'?o.bg:null,edges:typeof o.edges==='boolean'?o.edges:null};})();
+  return {nav:o.nav==='classic'?'classic':'fusion',bg:typeof o.bg==='string'?o.bg:null,edges:typeof o.edges==='boolean'?o.edges:null,
+    orbit:o.orbit==='constrained'?'constrained':'free',pivot:['selection','cursor'].includes(o.pivot)?o.pivot:'view'};})();
 function saveOpts(){try{localStorage.setItem(OPT_KEY,JSON.stringify(OPTS));}catch(e){}}
 const NAV_HINT={fusion:'Navigation Fusion: middle drag pans, Shift+middle orbits, wheel zooms, double middle-click fits; trackpad: scroll pans, Shift+scroll orbits, pinch zooms',
   classic:'Navigation Classic: left drag orbits, right or middle drag pans, wheel zooms'};
@@ -103,6 +105,7 @@ const _t=new THREE.Vector3(),_p=new THREE.Vector3();
 const camTarget=(o=new THREE.Vector3(),end=false)=>controls.getTarget(o,end);
 // place the camera at pos looking at target (zoom for the ortho camera), through the controls so they agree
 function placeCam(pos,target,zoom,animate=false){
+  controls.updateCameraUp();                       // callers set cam.up first (free orbit leaves any up)
   controls.setFocalOffset(0,0,0,false);
   controls.setLookAt(pos.x,pos.y,pos.z,target.x,target.y,target.z,animate);
   if(zoom!=null&&cam.isOrthographicCamera)controls.zoomTo(zoom,animate);
@@ -118,20 +121,114 @@ function bakeOrbit(){
   controls.setLookAt(pos.x,pos.y,pos.z,pos.x+dir.x*r,pos.y+dir.y*r,pos.z+dir.z*r,false);
   if(cam.isOrthographicCamera)controls.zoomTo(z,false);controls.update(0);
 }
-controls.addEventListener('controlend',()=>{bakeOrbit();dirty=true;});
+controls.addEventListener('controlend',()=>{bakeOrbit();orbitPivot=null;showPivot(null);dirty=true;});
+// ---- Free orbit (Options, default; Fusion's Free Orbit): the drag turns the camera about a screen-space axis
+// (horizontal drag about the view's up, vertical drag about its right), rotating position, target and up together
+// about the pivot, so the model keeps turning through and past the top and bottom with no locked up axis.
+// camera-controls stays the controller for pan, zoom to cursor and transitions: its rotate step is replaced, and
+// its orbit space is re-based on the camera's new up after every step (updateCameraUp), so its polar clamp never
+// meets a pole. Constrained is the camera-controls turntable with world Z up. ----
+const ZUP=new THREE.Vector3(0,0,1);
+const freeOrbit=()=>OPTS.orbit!=='constrained';
+let orbitPivot=null;
+const _qa=new THREE.Quaternion(),_ax=new THREE.Vector3(),_cr=new THREE.Vector3(),_cu=new THREE.Vector3();
+function placeFree(pos,tgt,up){
+  cam.up.copy(up).normalize();controls.updateCameraUp();controls.setFocalOffset(0,0,0,false);
+  controls.setLookAt(pos.x,pos.y,pos.z,tgt.x,tgt.y,tgt.z,false);controls.update(0);dirty=true;
+}
+// rotate the camera by quaternion q about point P (position, target and up together)
+function turnCam(q,P){
+  const pos=controls.getPosition(new THREE.Vector3()).sub(P).applyQuaternion(q).add(P);
+  const tgt=camTarget(new THREE.Vector3()).sub(P).applyQuaternion(q).add(P);
+  cam.updateMatrixWorld();placeFree(pos,tgt,_cu.setFromMatrixColumn(cam.matrixWorld,1).applyQuaternion(q));
+}
+// deltaX, deltaY as camera-controls passes them (previous minus current pointer, px); same speed as its rotate
+function freeRotate(deltaX,deltaY){
+  const dx=-deltaX,dy=-deltaY;if(!dx&&!dy)return;
+  const h=controls._elementRect.height||canvas.clientHeight||1,k=2*Math.PI*controls.azimuthRotateSpeed/h;
+  cam.updateMatrixWorld();_cr.setFromMatrixColumn(cam.matrixWorld,0);_cu.setFromMatrixColumn(cam.matrixWorld,1);
+  _ax.copy(_cu).multiplyScalar(dx).addScaledVector(_cr,dy);const len=_ax.length();_ax.divideScalar(len);
+  // the model turns with the pointer: the camera turns the other way
+  turnCam(_qa.setFromAxisAngle(_ax,-k*len),orbitPivot||camTarget(new THREE.Vector3()));
+}
+const ccRotate=controls._rotateInternal;
+controls._rotateInternal=(dx,dy)=>{if(freeOrbit())freeRotate(dx,dy);else ccRotate(dx,dy);};
+// a level, Z-up view in the same direction (straight down or up: nudged a hair toward -Y, as the review views do)
+function levelUp(){
+  bakeOrbit();const t=camTarget(new THREE.Vector3()),p=controls.getPosition(new THREE.Vector3()),d=p.clone().sub(t);
+  if(cam.up.distanceToSquared(ZUP)<1e-12&&Math.abs(d.clone().normalize().z)<=0.9999)return;
+  if(Math.abs(d.clone().normalize().z)>0.9999)p.y-=1e-3*d.length();
+  cam.up.copy(ZUP);placeCam(p,t,cam.isOrthographicCamera?cam.zoom:null);
+}
 let lastFrame=performance.now();              // frame delta for the controls' smoothing (THREE.Clock is deprecated in r187)
 let R=null;                          // the review workspace (review.js), once the manifest says review is on
+let Wt=null;                         // the weight estimate and Part info (weight.js), once a model is loaded
 let cube=null;                       // the view cube (three-viewport-gizmo)
 let showSides=false;                 // named sides overlay
 // labels drawn over the canvas (pins, measurements, named sides): CSS2DRenderer, no pointer events except pins
 const labels=new CSS2DRenderer();labels.domElement.id='labels';host.append(labels.domElement);
-// orbit about the point under the cursor (else the selection's centre) when an orbit starts. This capture listener
-// runs before camera-controls sees the event, so the button map always matches the event's own Shift state.
+// ---- orbit pivot (Options): "view" (default) is the centre of what is being viewed, the volume centroid of the
+// visible parts (or of the selection when there is one); "selection" is the selection's centroid, else the view's
+// target; "cursor" is the point under the cursor (else the selection, else the view centroid). The centroid is the
+// true solid centroid of each closed mesh (signed tetrahedra from the origin, cached per geometry), weighted by
+// its volume; an open or flat mesh counts as its bounding box (centre, box volume). It is computed when an orbit
+// starts, so hiding, isolating, solo, a version switch and explode all move it; section planes do not. ----
+const solidCache=new WeakMap();
+function solidOf(g){
+  let s=solidCache.get(g);if(s)return s;
+  const p=g.attributes.position,idx=g.index?g.index.array:null,n=idx?idx.length/3:p.count/3;
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),x=new THREE.Vector3(),q=1e4,weld=new Map(),edges=new Map();
+  const vid=i=>{const k=Math.round(p.getX(i)*q)+','+Math.round(p.getY(i)*q)+','+Math.round(p.getZ(i)*q);let v=weld.get(k);if(v===undefined){v=weld.size;weld.set(k,v);}return v;};
+  let V=0;const C=new THREE.Vector3();
+  for(let t=0;t<n;t++){
+    const i0=idx?idx[3*t]:3*t,i1=idx?idx[3*t+1]:3*t+1,i2=idx?idx[3*t+2]:3*t+2;
+    a.fromBufferAttribute(p,i0);b.fromBufferAttribute(p,i1);c.fromBufferAttribute(p,i2);
+    const v=a.dot(x.crossVectors(b,c))/6;V+=v;C.addScaledVector(x.copy(a).add(b).add(c),v/4);
+    const w=[vid(i0),vid(i1),vid(i2)];
+    for(let e=0;e<3;e++){const u=w[e],z=w[(e+1)%3];if(u===z)continue;const k=u<z?u*2097152+z:z*2097152+u;edges.set(k,(edges.get(k)||0)+1);}
+  }
+  let closed=n>0&&Math.abs(V)>1e-9;for(const m of edges.values())if(m!==2){closed=false;break;}
+  s={closed,volume:Math.abs(V),centroid:closed?C.divideScalar(V):null};solidCache.set(g,s);return s;
+}
+function centroidOf(meshes){
+  scene.updateMatrixWorld();let W=0;const sum=new THREE.Vector3(),t=new THREE.Vector3(),bb=new THREE.Box3(),sz=new THREE.Vector3();
+  for(const m of meshes){
+    const s=solidOf(m.geometry);let w;
+    if(s.closed){w=s.volume*Math.abs(m.matrixWorld.determinant());t.copy(s.centroid).applyMatrix4(m.matrixWorld);}
+    else{if(!m.geometry.boundingBox)m.geometry.computeBoundingBox();bb.copy(m.geometry.boundingBox).applyMatrix4(m.matrixWorld);
+      bb.getSize(sz);w=Math.max(sz.x*sz.y*sz.z,1e-9);bb.getCenter(t);}
+    sum.addScaledVector(t,w);W+=w;
+  }
+  return W>0?sum.divideScalar(W):null;
+}
+const visibleMeshes=()=>meshList.filter(effVisible);
+function selMeshes(){if(!sel)return [];const out=[];for(const l of sel.rec.leaves){const r=nodes.get(l);if(r)r.obj.traverse(m=>{if(m.isMesh&&effVisible(m))out.push(m);});}return out;}
+const viewCentre=()=>centroidOf(visibleMeshes());
+function pivotFor(e){
+  const sc=sel?centroidOf(selMeshes()):null;
+  if(OPTS.pivot==='cursor'){const h=e?pickHit(e):null;return h?h.point.clone():sc||viewCentre();}
+  if(OPTS.pivot==='selection')return sc;
+  return sc||viewCentre();
+}
+// a small marker at the pivot while an orbit runs (none at rest)
+const pivotEl=document.createElement('div');pivotEl.id='pivot-marker';
+const pivotObj=new CSS2DObject(pivotEl);pivotObj.visible=false;pivotObj.name='Orbit pivot';scene.add(pivotObj);
+function showPivot(p){pivotObj.visible=!!p;if(p)pivotObj.position.copy(p);dirty=true;}
+// when an orbit starts. This capture listener runs before camera-controls sees the event, so the button map always
+// matches the event's own Shift state. Free: the target moves onto the view ray nearest the pivot (the same view,
+// so nothing moves on screen) and the drag turns about the pivot. Constrained: the view is levelled (Z up) and the
+// pivot is a camera-controls orbit point (a focal offset, folded back when the move ends).
 function orbitAbout(e){
-  const h=pickHit(e);
-  let p=h?h.point:null;
-  if(!p&&sel){const b=new THREE.Box3().setFromObject(sel.rec.obj);if(!b.isEmpty())p=b.getCenter(new THREE.Vector3());}
-  if(p){controls.setOrbitPoint(p.x,p.y,p.z);controls.update(0);}
+  const p=pivotFor(e);
+  if(freeOrbit()){
+    orbitPivot=p;
+    if(p){
+      bakeOrbit();controls.update(0);cam.updateMatrixWorld();
+      const pos=controls.getPosition(new THREE.Vector3()),dir=cam.getWorldDirection(new THREE.Vector3()),d=p.clone().sub(pos).dot(dir);
+      if(d>1e-3){const t=pos.clone().addScaledVector(dir,d);controls.setLookAt(pos.x,pos.y,pos.z,t.x,t.y,t.z,false);controls.update(0);}
+    }
+  }else{levelUp();if(p){controls.setOrbitPoint(p.x,p.y,p.z);controls.update(0);}}
+  showPivot(p||camTarget(new THREE.Vector3()));
 }
 let midClick={t:0,x:0,y:0};
 canvas.addEventListener('pointerdown',e=>{
@@ -169,7 +266,7 @@ canvas.addEventListener('wheel',e=>{
   const dx=e.deltaX,dy=e.deltaY;
   if(kind==='orbit')controls._rotateInternal(-dx,-dy);else controls._truckInternal(-dx,-dy,false,false);
   dirty=true;clearTimeout(wheelBake);
-  wheelBake=setTimeout(()=>{wheelBake=0;bakeOrbit();dirty=true;},500);    // the scroll paused: fold the pivot back
+  wheelBake=setTimeout(()=>{wheelBake=0;bakeOrbit();orbitPivot=null;showPivot(null);dirty=true;},500);    // the scroll paused: fold the pivot back
 },{capture:true,passive:false});
 let dirty=true,renders=0,ctrlTrue=0;
 const lastC={cam:null,p:new THREE.Vector3(),q:new THREE.Quaternion(),z:0,t:new THREE.Vector3()};
@@ -239,28 +336,72 @@ new ResizeObserver(resize).observe(host);
 // cube orbits the camera live, as in Fusion; CAD names (Z up, front is -Y). The cube moves the camera itself (a
 // click animates, a drag sets it every pointer move); while it does, the controls are not updated, or their own
 // state would put the camera back each frame. When it ends the controls take the new pose: one undo step. ----
-let cubeDrag=false;
+let cubeDrag=false,cubeClick=false;
 if(!SOFT){
   const face=(label)=>({label,color:'#d7dee8',labelColor:'#0d1117',hover:{color:'#1f6feb',labelColor:'#ffffff'}});
   cube=new ViewportGizmo(cam,renderer,{type:'cube',container:host,placement:'top-right',size:116,offset:{top:6,right:6},
     font:{family:'-apple-system,system-ui,sans-serif',weight:800},resolution:256,
     right:face('RIGHT'),left:face('LEFT'),top:face('TOP'),bottom:face('BOTTOM'),front:face('BACK'),back:face('FRONT'),   // the gizmo's front is +Y once Z is up
     background:{enabled:false},corners:{color:'#9aa7b6',hover:{color:'#1f6feb'}},edges:{color:'#9aa7b6',opacity:1,hover:{color:'#1f6feb'}}});
-  {const el=cube._domElement||cube.domElement;if(el)el.id="viewcube";}
+  {const el=cube._domElement||cube.domElement;if(el){el.id="viewcube";el.style.zIndex="4";}}   // under the cube arrows
   cube.addEventListener('start',()=>{bakeOrbit();if(ready&&!restoring&&hp>=0)hist[hp].cam=snapCam();cube.target.copy(camTarget());controls.enabled=false;exitCamMode();
-    cubeDrag=!cube.animating;});
+    cubeDrag=!cube.animating;cubeClick=cube.animating;});
   cube.addEventListener('change',()=>{dirty=true;});
   cube.addEventListener('end',()=>{
     cubeDrag=false;
     const t=cube.target.clone(),p=cam.position.clone(),d=p.clone().sub(t);
-    // straight down or up: nudge a hair toward -Y so the orbit keeps +Y up on screen (the review views do the same)
-    if(Math.abs(d.clone().normalize().z)>0.9999)p.y-=1e-3*d.length();
+    // a face, edge or corner click lands level with Z up (the cube animates to a Z-up pose); a drag keeps the up it
+    // turned with. Straight down or up with Z up: nudge a hair toward -Y so +Y stays up on screen (as the review views)
+    if(cubeClick)cam.up.copy(ZUP);cubeClick=false;
+    if(cam.up.z>0.9999&&Math.abs(d.clone().normalize().z)>0.9999)p.y-=1e-3*d.length();
     placeCam(p,t,cam.isOrthographicCamera?cam.zoom:null);controls.enabled=!fishOn();markView(null);
     if(ready&&!restoring)pushHist();
   });
   // a press on the cube that neither drags nor hits a face sends no 'end': give the camera back to the controls
   addEventListener('pointerup',()=>{if(cubeDrag)setTimeout(()=>{if(cubeDrag&&!cube._dragging&&!cube.animating){cubeDrag=false;controls.enabled=!fishOn();}},0);});
 }
+// ---- view cube arrows (Fusion's ViewCube): roll the view 90 degrees about the viewing axis, or step to the face
+// above, below, left or right (a 90 degree turn about the view's horizontal or vertical axis through the target;
+// from a face view the result snaps to the axes). Animated, one undo step each, keyboard focusable. ----
+let camAnim=null;
+const _m4=new THREE.Matrix4();
+function animateCam(posF,tgtF,upF,ms=320){
+  if(camAnim)camAnim.finish();
+  bakeOrbit();if(ready&&!restoring&&hp>=0)hist[hp].cam=snapCam();
+  const p0=controls.getPosition(new THREE.Vector3()),t0=camTarget(new THREE.Vector3());cam.updateMatrixWorld();
+  const u0=new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1);
+  const q0=new THREE.Quaternion().setFromRotationMatrix(_m4.lookAt(p0,t0,u0)),qf=new THREE.Quaternion().setFromRotationMatrix(_m4.lookAt(posF,tgtF,upF));
+  const dq=qf.clone().multiply(q0.clone().invert()),qi=new THREE.Quaternion(),start=performance.now();
+  const finish=()=>{camAnim=null;placeFree(posF,tgtF,upF);markView(null);if(ready&&!restoring)pushHist();};
+  if(SOFT||ms<=0)return finish();
+  camAnim={finish,step(now){const k=Math.min(1,(now-start)/ms);if(k>=1)return finish();const e=k*k*(3-2*k);
+    qi.identity().slerp(dq,e);const t=t0.clone().lerp(tgtF,e);
+    placeFree(p0.clone().sub(t0).applyQuaternion(qi).add(t),t,u0.clone().applyQuaternion(qi));}};
+}
+const snapAxis=v=>{const a=[Math.abs(v.x),Math.abs(v.y),Math.abs(v.z)],i=a.indexOf(Math.max(...a)),o=new THREE.Vector3();o.setComponent(i,Math.sign(v.getComponent(i)));return o;};
+const COS2=Math.cos(2*D2R);
+function cubeTurn(kind){
+  if(fishOn()||!ready)return;exitCamMode();bakeOrbit();
+  const p=controls.getPosition(new THREE.Vector3()),t=camTarget(new THREE.Vector3()),L=p.distanceTo(t);cam.updateMatrixWorld();
+  const n=p.clone().sub(t).normalize(),r=new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,0),u=new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1);
+  let nF=n.clone(),uF=u.clone();
+  if(kind==='cw')uF.copy(r).negate();else if(kind==='ccw')uF.copy(r);
+  else if(kind==='up'){nF.copy(u);uF.copy(n).negate();}else if(kind==='down'){nF.copy(u).negate();uF.copy(n);}
+  else if(kind==='left')nF.copy(r).negate();else if(kind==='right')nF.copy(r);
+  const sn=snapAxis(n),su=snapAxis(u);
+  if(sn.dot(n)>COS2&&su.dot(u)>COS2){nF=snapAxis(nF);uF=snapAxis(uF);}       // a face view lands on a face view
+  animateCam(t.clone().addScaledVector(nF,L),t,uF);
+}
+for(const [id,k] of [['cube-roll-cw','cw'],['cube-roll-ccw','ccw'],['cube-up','up'],['cube-down','down'],['cube-left','left'],['cube-right','right']])
+  $(id).onclick=()=>cubeTurn(k);
+$('cube-home').onclick=()=>{if(camAnim)camAnim.finish();camAction(goHome);};
+// the arrows show while the pointer is over or near the cube (and while one has keyboard focus)
+host.addEventListener('pointermove',e=>{const n=$('cube-nav');if(SOFT||fishOn()){n.classList.remove('show');return;}
+  const r=n.getBoundingClientRect(),m=24,inside=e.clientX>r.left-m&&e.clientX<r.right+m&&e.clientY>r.top-m&&e.clientY<r.bottom+m;
+  n.classList.toggle('show',inside);});
+host.addEventListener('pointerleave',()=>$('cube-nav').classList.remove('show'));
+if(SOFT)$('cube-nav').hidden=true;
+
 resize();
 
 // ---- movable group (--movable): gizmo, pose fields, nudges, pose save ----
@@ -281,7 +422,7 @@ function setCam(c){
   dir.normalize();
   if(c.isOrthographicCamera){c.zoom=OB/half;c.position.copy(t).addScaledVector(dir,Math.max(2000,half*6,radius*4));}
   else{c.zoom=1;c.position.copy(t).addScaledVector(dir,half/Math.tan(c.fov*Math.PI/360));}
-  c.up.set(0,0,1);c.updateProjectionMatrix();c.lookAt(t);
+  c.up.copy(cam.up);c.updateProjectionMatrix();c.lookAt(t);
   const pos=c.position.clone();useCam(c);placeCam(pos,t,c.zoom);
 }
 function useCam(c){
@@ -397,11 +538,13 @@ function applyView(v){
 }
 function applyFramedView(v){
   const eye=new THREE.Vector3(...v.eye),f=new THREE.Vector3(...v.focal),up=new THREE.Vector3(...v.up).normalize();
-  // the orbit stays Z-up; a view with another up vector (top: +Y up, looking down -Z) gets its eye nudged a hair
-  // toward -up, which gives the same screen orientation and framing
-  if(Math.abs(up.z)<0.99)eye.addScaledVector(up,-1e-3*eye.distanceTo(f));
+  // Free orbit takes the view's own up exactly (made square to the view direction). Constrained keeps Z up: a view
+  // with another up vector (top: +Y up, looking down -Z) gets its eye nudged a hair toward -up, which gives the same
+  // screen orientation and framing
+  const d0=eye.clone().sub(f).normalize(),u=up.clone().addScaledVector(d0,-up.dot(d0));
+  if(freeOrbit()&&Math.abs(up.z)<0.99&&u.lengthSq()>1e-8)cam.up.copy(u.normalize());   // a Z-up view keeps Z exactly
+  else{if(Math.abs(up.z)<0.99)eye.addScaledVector(up,-1e-3*eye.distanceTo(f));cam.up.copy(ZUP);}
   const dir=eye.clone().sub(f);let pos,zoom=null;
-  cam.up.set(0,0,1);
   if(cam.isOrthographicCamera){pos=f.clone().addScaledVector(dir.clone().normalize(),Math.max(dir.length(),radius*4));zoom=OB/v.scale;}
   else pos=f.clone().addScaledVector(dir.normalize(),v.scale/Math.tan(FOV*Math.PI/360));
   placeCam(pos,f,zoom);
@@ -464,7 +607,7 @@ async function loadViews(){
 }
 function fitAll(){exitCamMode();const b=new THREE.Box3();for(const m of meshList)if(effVisible(m))b.expandByObject(m);if(!b.isEmpty())focusBox(b,false);markView(null);}
 // Home: the project's default review view (else iso), the view the page opened with
-function goHome(){const v=VIEWS.find(x=>x.name===(defaultView||(headMode?'front':'iso'))&&x.kind!=='camera');if(v)applyView(v);else fitAll();}
+function goHome(){const v=VIEWS.find(x=>x.name===(defaultView||(headMode?'front':'iso'))&&x.kind!=='camera');if(v)applyView(v);else{levelUp();fitAll();}}
 function fitSelection(){if(sel)focusKey(sel.key,false);else fitAll();}
 $('proj').onclick=()=>{if(!camMode)camAction(()=>setCam(cam===ortho?persp:ortho));};
 $('fit').onclick=()=>camAction(fitAll);
@@ -483,6 +626,10 @@ addEventListener('pointerdown',e=>{if(!optPop.contains(e.target)&&!$('options').
 addEventListener('keydown',e=>{if(e.key==='Escape'&&!optPop.hidden){e.preventDefault();e.stopImmediatePropagation();closeOptions();}},true);
 document.querySelectorAll('input[name=nav]').forEach(r=>r.onchange=()=>{if(r.checked)setNav(r.value);});
 $('navhint').title='Change it in Options';
+// orbit style and pivot (Options, remembered per browser)
+function setOrbitOpt(k,v){OPTS[k]=v;saveOpts();document.querySelectorAll(`input[name=${k}]`).forEach(r=>{r.checked=r.value===OPTS[k];});
+  if(k==='orbit'&&v==='constrained')camAction(levelUp);}
+for(const k of ['orbit','pivot'])document.querySelectorAll(`input[name=${k}]`).forEach(r=>{r.checked=r.value===OPTS[k];r.onchange=()=>{if(r.checked)setOrbitOpt(k,r.value);};});
 setNav(OPTS.nav);
 // viewport background: light grey (the CAD default), white, dark, black, or any colour; overlays switch to light
 // text on a dark background so labels stay readable
@@ -856,16 +1003,17 @@ function openComponentMenu(k,x,y,hit=null){
   const r=nodes.get(k);if(!r)return;
   contextFocus=componentMenu.hidden?document.activeElement:contextFocus;contextKey=k;contextHit=hit;
   $('component-menu-name').textContent=r.leaf?r.leaf.name:r.obj.name;
-  $('isolate-component').textContent=r.leaf?'Isolate component':'Isolate assembly';
-  const pk=parentKey(k);$('solo-group').hidden=!pk;if(pk)$('solo-group').textContent='Solo group ('+nodes.get(pk).obj.name+')';
+  const lab=(id,t)=>{$(id).querySelector('span').textContent=t;};
+  lab('isolate-component',r.leaf?'Isolate component':'Isolate assembly');
+  const pk=parentKey(k);$('solo-group').hidden=!pk;if(pk)lab('solo-group','Solo group ('+nodes.get(pk).obj.name+')');
   $('fit-component').disabled=fishOn();
   $('pin-component').hidden=!R;$('measure-component').hidden=!R||!hit;
-  const fu=R?R.followUpFor(k):null;$('followup-component').hidden=!fu;if(fu)$('followup-component').textContent=`Add follow-up pin (to #${fu.n})`;
-  $('scope-component').hidden=!R;if(R)$('scope-component').textContent=R.inScope(k)?'Remove from scope lock':'Add to scope lock';
+  const fu=R?R.followUpFor(k):null;$('followup-component').hidden=!fu;if(fu)lab('followup-component',`Add follow-up pin (to #${fu.n})`);
+  $('scope-component').hidden=!R;if(R){const on=R.inScope(k);lab('scope-component',on?'Remove from scope lock':'Add to scope lock');$('scope-component').querySelector('i').className='ic '+(on?'i-lock-open':'i-lock');}
   componentMenu.hidden=false;
   componentMenu.style.left=Math.max(8,Math.min(x,innerWidth-componentMenu.offsetWidth-8))+'px';
   componentMenu.style.top=Math.max(8,Math.min(y,innerHeight-componentMenu.offsetHeight-8))+'px';
-  $('tip').style.display='none';lastMove=null;$('isolate-component').focus({preventScroll:true});
+  $('tip').style.display='none';lastMove=null;$('select-component').focus({preventScroll:true});
 }
 $('scope-component').onclick=()=>{const k=contextKey;closeComponentMenu(true);if(R&&k)R.toggleScope(k);};
 // the parent group of a part in the tree (its sub-assembly or module), if it has one
@@ -876,6 +1024,10 @@ menuAct('solo-group',k=>{const pk=parentKey(k);if(!pk)return;const keep=new Set(
   for(const [l,n] of nodes)if(n.leaf)vis.set(l,keep.has(l));viewHidden.clear();applyVisibility();commit();});
 menuAct('showall-component',()=>$('showall').onclick());
 menuAct('fit-component',k=>camAction(()=>focusKey(k)));
+// Select: the part the menu was opened on (one undo step). Pin: a pin at the right-clicked point, its floating card
+// opened there (from the tree, with no point, a pin over the part's whole region)
+menuAct('select-component',k=>{select(k);commit();});
+menuAct('info-component',k=>{if(Wt)Wt.partInfo(k,parseFloat(componentMenu.style.left)||0,parseFloat(componentMenu.style.top)||0);});
 menuAct('pin-component',(k,h)=>{if(R)R.pinPart(k,h&&h.object.userData.key===k?h:null);});
 menuAct('measure-component',(k,h)=>{if(R&&h)R.measureFrom(h);});
 menuAct('followup-component',(k,h)=>{if(R)R.followUpPart(k,h&&h.object.userData.key===k?h:null);});
@@ -1051,7 +1203,7 @@ function drawEdgeOverlay(){
 const hist=[];let hp=-1,ready=false,restoring=false;
 const HMAX=200;
 // the camera where it is going: transitions in flight are recorded at their end values
-function snapCam(){return {proj:cam===ortho?'o':'p',p:controls.getPosition(new THREE.Vector3(),true).toArray(),t:camTarget(new THREE.Vector3(),true).toArray(),
+function snapCam(){return {proj:cam===ortho?'o':'p',p:controls.getPosition(new THREE.Vector3(),true).toArray(),t:camTarget(new THREE.Vector3(),true).toArray(),u:cam.up.toArray(),
   z:cam.isOrthographicCamera?(controls._zoomEnd??cam.zoom):cam.zoom,v:activeView,
   cv:camMode?camMode.name:null,pb:projBefore===ortho?'o':projBefore===persp?'p':null};}
 function snapshot(){
@@ -1086,7 +1238,7 @@ function restoreCam(c){
   camMode=cv||null;persp.fov=FOV;persp.updateProjectionMatrix();
   projBefore=cv?(c.pb==='o'?ortho:persp):null;camUI();
   const C=c.proj==='o'?ortho:persp;useCam(C);
-  C.zoom=c.z;C.up.set(0,0,1);C.updateProjectionMatrix();placeCam(new THREE.Vector3().fromArray(c.p),new THREE.Vector3().fromArray(c.t),c.z);
+  C.zoom=c.z;C.up.fromArray(c.u||[0,0,1]);C.updateProjectionMatrix();placeCam(new THREE.Vector3().fromArray(c.p),new THREE.Vector3().fromArray(c.t),c.z);
   markView(c.v);
 }
 function applyHist(i){
@@ -1302,6 +1454,7 @@ async function loadModel(s){
   if(selKey&&nodes.has(selKey))select(selKey,false);
   const first=loadedSig===null;loadedSig=s.sig;loadedMtime=s.mtime;loadedTree=s.tree_mtime;
   if(R)await R.onModel(first);
+  if(!Wt)Wt=initWeight(ctx());Wt.onModel();            // the Weight block and Part info card (weight.js)
   if(first){
     setViewerTitle(M.title||M.name);
     const v0=VIEWS.find(v=>v.name===(defaultView||(headMode?'front':'iso')));if(v0)applyView(v0);else fitAll();
@@ -1335,11 +1488,12 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
   setLeftAction:a=>{leftAction=a==='none'?ACT.NONE:ACT.ROTATE;mouseMap();},
   pickHit,pickInfo,pickEdge,edgeScreen,partRef,select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
   dirty:()=>{dirty=true;},renderNow:()=>{if(!SOFT)renderNow();},soft:SOFT,
-  camera:()=>{const c=snapCam();return {projection:c.proj==='o'?'ortho':'persp',position:c.p,target:c.t,up:[0,0,1],zoom:c.z,view:c.v,fov:cam.isPerspectiveCamera?cam.fov:null};},
+  camera:()=>{const c=snapCam();return {projection:c.proj==='o'?'ortho':'persp',position:c.p,target:c.t,up:c.u,zoom:c.z,view:c.v,fov:cam.isPerspectiveCamera?cam.fov:null};},
   hiddenKeys:()=>[...vis].filter(([,v])=>!v).map(([k])=>k)};}
 // a small handle for scripted checks (CDP) and the console
 window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clearSel,undo,redo,commit,get cube(){return cube;},
-  get review(){return R;},get lastCopied(){return lastCopied;},
+  meshes:()=>meshList,toScreen:p=>{const r=canvas.getBoundingClientRect(),v=new THREE.Vector3(...p).project(cam);return [r.left+(v.x+1)/2*r.width,r.top+(1-v.y)/2*r.height];},
+  get review(){return R;},get weight(){return Wt;},get lastCopied(){return lastCopied;},
   edgeAt:(x,y)=>{const e={clientX:x,clientY:y};const ed=pickEdge(e,pickHit(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px}:null;},
   get hoverEdge(){return hoverEdge?{key:hoverEdge.mesh.userData.key,length:hoverEdge.record.length_mm}:null;},pickAt:(x,y)=>{const h=pickHit({clientX:x,clientY:y});const i=pickInfo(h);if(i)delete i.mesh;return i;},
   home:()=>camAction(goHome),fitSelection:()=>camAction(fitSelection),setSides:v=>{setSides(v);commit();},
@@ -1348,7 +1502,8 @@ window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clear
   lensHits:(x,y)=>{if(!fishOn())return null;const d=fishDir({clientX:x,clientY:y});if(!d)return [];ray.set(new THREE.Vector3(...camMode.eye),d);
     const obs=new Set();for(const o of observerObjs())o.traverse(m=>obs.add(m));
     return ray.intersectObjects(meshList.filter(m=>effVisible(m)&&!obs.has(m)),false).slice(0,6).map(h=>(h.object.userData.leaf?h.object.userData.leaf.component:h.object.name)+(h.object.material.transparent?' (clear)':'')+' @'+h.distance.toFixed(1));},
-  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,
+  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,up:cam.up.toArray(),screenUp:(cam.updateMatrixWorld(),new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1).toArray()),orbitMode:OPTS.orbit,pivotMode:OPTS.pivot,
+    pivot:pivotFor(null)?.toArray()||null,viewCentre:viewCentre()?.toArray()||null,pivotShown:pivotObj.visible,pivotAt:pivotObj.visible?pivotObj.position.toArray():null,
     hidden:[...vis].filter(([,v])=>!v).map(([k])=>k),clip:clipPlanes.map(p=>[p.normal.toArray(),p.constant]),
     explode:+$('explode').value,grid:showGrid,view:activeView,cameraView:camMode?camMode.name:null,fov:cam.isPerspectiveCamera?cam.fov:null,
     proj:cam===ortho?'ortho':'persp',projDisabled:$('proj').disabled,fisheye:fishOn(),fishRect:FISH.rect,camLabel:$('camnote').hidden?null:$('camnote-t').textContent,orbit:controls.enabled,selected:sel&&sel.key,renders,ctrlTrue,status:$('status').textContent,
@@ -1392,7 +1547,7 @@ function restoreVersionCamera(){
     sessionStorage.removeItem('aad-version-camera');
     if(!saved||saved.version!==M.version)return;
     setCam(saved.proj==='persp'?persp:ortho);
-    cam.zoom=saved.zoom;cam.updateProjectionMatrix();
+    cam.zoom=saved.zoom;cam.updateProjectionMatrix();if(Array.isArray(saved.up))cam.up.fromArray(saved.up);
     placeCam(new THREE.Vector3().fromArray(saved.p),new THREE.Vector3().fromArray(saved.target),saved.zoom);
   }catch(e){}
 }
@@ -1506,6 +1661,7 @@ let lastDirty=0;
 (function loop(now){
   requestAnimationFrame(loop);
   const t0=performance.now(),dt=Math.min(0.5,(t0-lastFrame)/1000);lastFrame=t0;
+  if(camAnim){camAnim.step(t0);dirty=true;}
   if(cube&&(cube.animating||cubeDrag))dirty=true;else if(controls.update(dt)){dirty=true;}
   if(cube&&!cube.animating&&!cubeDrag&&dirty){camTarget(cube.target);cube.cameraUpdate();}
   if(camMoved()){dirty=true;ctrlTrue++;}

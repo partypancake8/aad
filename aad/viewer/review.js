@@ -3,13 +3,16 @@
 // CAD project (<project>/.cadreview/, written through the server's /review/ routes) and in the page's one undo
 // history: snapshot() and restore() cover pins, the scope lock, measurements and tour decisions.
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {GROUPS_FALLBACK,NO_UNCHANGED_BADGE,groupOf,groupFill,renderChipGroups,groupBadge,issuesHTML,keepBanner} from './pin_groups.js';
+import {initRepin} from './repin.js';
+import {initMeasure} from './measure.js';
 
 const ISSUE_FALLBACK=['weird_geometry','incoherent_addition','collateral_damage','floating_unsupported','orientation_mirror',
   'fit_clearance','printability','holes_ports_blocked','fasteners_assembly','regression','belt_pulley','envelope_size',
   'intent_misread','other'];
 const MODES={select:'',pin:'Pin: click a part to drop a numbered pin. Esc leaves.',
   region:'Region: drag a box around the parts to pin together. Esc leaves.',
-  measure:'Measure: click two points. Esc leaves.',scope:'Scope: click the parts the next edit may change. Esc leaves.'};
+  measure:'Measure: click two edges, vertices or faces. Esc cancels, Delete removes.',scope:'Scope: click the parts the next edit may change. Esc leaves.'};
 const KEYS={v:'select',p:'pin',g:'region',m:'measure',s:'scope'};
 
 export function initReview(V){
@@ -17,6 +20,7 @@ export function initReview(V){
   const C={changed:new THREE.Color('#f59e0b'),moved:new THREE.Color('#3b82f6'),added:new THREE.Color('#22c55e'),
     collateral:new THREE.Color('#ef4444'),scope:new THREE.Color('#22c55e'),tour:new THREE.Color('#eab308')};
   const S={pins:[],next:1,scope:[],meas:[],decisions:{}};        // the undoable review state
+  let RP=null,groups=GROUPS_FALLBACK;                            // repin.js, the class groups (pin_groups.js)
   let server=null,classes=[],mode='select',diff=null,diffByNode=new Map(),tourIdx=-1,measA=null,lastPacket=null;
   let pinsUpdated=null,lastCam='',writing=Promise.resolve(),persisted={pins:'',scope:'',dec:''},dialogCtx=null,hotPin=null;
   const markers=new Map();                                        // pin id -> CSS2DObject
@@ -47,6 +51,7 @@ export function initReview(V){
   async function loadState(adopt=true){
     server=await getJSON('/review/state.json');
     classes=server.issue_classes?.length?server.issue_classes:ISSUE_FALLBACK.map(id=>({id,label:id}));
+    if(server.issue_groups?.length)groups=server.issue_groups;
     if(adopt){
       S.pins=server.pins.pins;S.next=server.pins.next;S.scope=server.scope.parts;S.decisions=server.tour?.decisions||{};
       persisted={pins:J(S.pins),scope:J(S.scope),dec:J(S.decisions)};pinsUpdated=server.pins.updated||null;
@@ -66,7 +71,7 @@ export function initReview(V){
   let followParent=null;                                          // pin id the next pin follows up (Add follow-up pin)
   function setMode(m,keepFollow=false){
     if(!MODES.hasOwnProperty(m))m='select';
-    mode=m;measA=null;clearMeasDraft();if(!keepFollow)followParent=null;
+    mode=m;measA=null;clearMeasDraft();if(!keepFollow)followParent=null;RP?.onMode(m);measModeChanged();
     document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
     const fp=followParent&&S.pins.find(p=>p.id===followParent);
     $('modehint').hidden=!MODES[m];$('modehint').textContent=fp?`Follow-up to pin #${fp.n}: click a part. Esc leaves.`:MODES[m];
@@ -75,12 +80,15 @@ export function initReview(V){
   }
   document.querySelectorAll('#modes button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
   function onKey(e){
+    if(RP?.onKey(e))return true;
     if(e.key==='Escape'){
       if(!card.hidden){closeDialog();return true;}
+      if(revSel||revPeek){holoOff();return true;}
       if(measA){measA=null;clearMeasDraft();return true;}
       if(mode!=='select'){setMode('select');return true;}
       return false;
     }
+    if(mode==='measure'&&(e.key==='Delete'||e.key==='Backspace')){deleteMeasAtPointer();return true;}
     const m=KEYS[e.key.toLowerCase()];
     if(m&&!e.shiftKey&&!(V.M&&V.M.movable)){setMode(m);return true;}
     return false;
@@ -92,21 +100,13 @@ export function initReview(V){
   function onClick(e,h,edge){
     if(!card.hidden&&dialogCtx){$('pin-save').click();return true;}       // a click in the view away from the card saves it
     if(mode==='select'||mode==='region')return false;
+    if(mode==='measure')return measureClick(e,h,edge);
     if(edge)h=edge.hit;
     if(!h){toast('Click on a part.',true,2500);return true;}
     const info=V.pickInfo(h);
+    if(mode==='pin'&&RP?.picking()){RP.picked(edge?{kind:'edge',info,edge:edge.record}:{kind:'point',info});return true;}
     if(mode==='pin'){openDialog(edge?{kind:'edge',info,edge:edge.record,parent:followParent}:{kind:'point',info,parent:followParent});return true;}
-    if(mode==='measure'&&edge)toast(`Edge <b>${edge.record.length_mm.toFixed(2)} mm</b> long; point snapped onto it.`,false,3500);
     if(mode==='scope'){toggleScope(info.part.key);return true;}
-    if(mode==='measure'){
-      if(!measA){measA=info;drawMeasDraft(info);return true;}
-      const a=new THREE.Vector3(...measA.world),b=new THREE.Vector3(...info.world),d=b.clone().sub(a);
-      const m={id:'m'+(S.meas.reduce((n,x)=>Math.max(n,+x.id.slice(1)),0)+1),a:measA.world,b:info.world,
-        a_part:measA.part,b_part:info.part,distance:+a.distanceTo(b).toFixed(4),delta:d.toArray().map(x=>+x.toFixed(4)),pin:null};
-      S.meas.push(m);measA=null;clearMeasDraft();changed();
-      toast(`Distance <b>${m.distance.toFixed(2)} mm</b>, dX ${m.delta[0].toFixed(2)}, dY ${m.delta[1].toFixed(2)}, dZ ${m.delta[2].toFixed(2)} mm`,false,4000);
-      return true;
-    }
     return false;
   }
   // region pin: drag a rectangle; every visible part whose box centre falls inside joins one pin
@@ -142,8 +142,7 @@ export function initReview(V){
   const meaningOf=id=>(classes.find(c=>c.id===id)||{}).meaning||'';
   function fillClasses(){
     const box=$('pin-chips');if(box.childElementCount)return;
-    for(const c of classes){const b=document.createElement('button');b.type='button';b.dataset.class=c.id;b.textContent=c.label;b.title=c.meaning||c.hint||'';
-      b.onclick=()=>{setPinClass(c.id);$('pin-save').click();};box.append(b);}
+    renderChipGroups(box,classes,groups,id=>{setPinClass(id);$('pin-save').click();});   // labelled groups (pin_groups.js)
     setPinClass(pinClass);
   }
   function setPinClass(id){pinClass=classes.some(c=>c.id===id)?id:'weird_geometry';
@@ -164,7 +163,7 @@ export function initReview(V){
   function setDraftMarker(c){
     if(draftMarker){draftMarker.removeFromParent();draftMarker.element.remove();draftMarker=null;}
     if(!c)return;
-    const el=document.createElement('div');el.className='pin-marker draft'+(c.kind==='region'?' region':'');el.textContent=String(S.next);el.id='pin-draft';
+    const el=document.createElement('div');el.className='pin-marker draft'+(c.kind==='region'?' region':'');el.textContent=String(c.repinN||S.next);el.id='pin-draft';
     el.addEventListener('pointerdown',e=>e.stopPropagation());
     draftMarker=new CSS2DObject(el);draftMarker.center.set(0.5,1.25);
     if(c.anchor.mesh){c.anchor.mesh.add(draftMarker);draftMarker.position.copy(c.anchor.local);}else{V.scene.add(draftMarker);draftMarker.position.copy(c.anchor.world);}
@@ -212,6 +211,7 @@ export function initReview(V){
     const where=c.kind!=='region'?`${c.info.name}  local ${c.info.local.map(x=>x.toFixed(1)).join(', ')} mm`:
       `${c.keys.length} part${c.keys.length===1?'':'s'}: `+c.keys.slice(0,5).map(k=>V.nodes.get(k)?.leaf?.name||k).join(', ')+(c.keys.length>5?', ...':'');
     const par=c.parent&&S.pins.find(p=>p.id===c.parent);
+    $('pin-was').hidden=!c.was;$('pin-was').textContent=c.was||'';
     $('pin-where').textContent=where;$('pin-dialog-h').textContent=c.title||(par?`Follow-up to pin #${par.n}`:c.kind==='region'?'New region pin':c.kind==='edge'?'New edge pin':'New pin');
     $('pin-note').value=c.note||keepNote||'';setPinClass(c.issue_class||pinClass);$('pin-severity').value=c.severity||$('pin-severity').value||'medium';
     const lm=S.meas[S.meas.length-1];$('pin-measure-row').hidden=!(lm&&!lm.pin);
@@ -228,6 +228,7 @@ export function initReview(V){
   });
   $('pin-save').onclick=()=>{
     const c=dialogCtx;if(!c)return;closeDialog();
+    if(c.repin){RP.save(c,{issue_class:pinClass,note:$('pin-note').value.trim(),severity:$('pin-severity').value});return;}   // repin.js
     const lm=S.meas[S.meas.length-1],attach=!$('pin-measure-row').hidden&&$('pin-measure').checked&&lm&&!lm.pin;
     const n=S.next,id='p'+n;S.next=n+1;
     const pin={schema:'cadreview/1',id,n,kind:c.kind,status:'open',note:$('pin-note').value.trim(),issue_class:pinClass,
@@ -245,7 +246,7 @@ export function initReview(V){
     toast(`Pin <b>#${n}</b> saved (${esc(label(pin.issue_class))}).`,false,2500);
   };
 
-  // right-click "Pin this part": a point pin where the part was clicked, else a region pin of that tree node's parts
+  // right-click "Pin": a point pin where the part was clicked, else a region pin of that tree node's parts
   function pinPart(k,h){
     if(h)openDialog({kind:'point',info:V.pickInfo(h)});
     else openDialog({kind:'region',keys:V.leafKeys(k)});
@@ -264,7 +265,7 @@ export function initReview(V){
     else openDialog({kind:'region',keys:V.leafKeys(k),parent:par.id});
   }
   // right-click "Measure from here": Measure mode with the first point already placed
-  function measureFrom(h){setMode('measure');measA=V.pickInfo(h);drawMeasDraft(measA);}
+  function measureFrom(h){setMode('measure');measA=MEAS.fromHit(h);drawMeasDraft(measA);}
   // ---- pin list, markers ----
   function pinWhere(p){
     if(p.anchor){const k=keyFor(p.anchor.part);return (k?(V.nodes.get(k).leaf?.name||k):p.anchor.part.node)+(p.edge?`, edge ${p.edge.length_mm.toFixed(2)} mm`:'')+' at '+p.anchor.local.map(x=>(+x).toFixed(1)).join(', ');}
@@ -276,7 +277,8 @@ export function initReview(V){
   let showResolved=false,pinChanges=null;
   // "Unchanged here since your packet": the server compares each open pin of the last packet with the build that
   // packet was sent against (its part, and every triangle within 5 mm of its point)
-  const unchangedHere=p=>{const c=pinChanges?.pins?.[p.id];return !!c&&p.status!=='resolved'&&!c.part_changed&&c.near_changed!==true;};
+  const unchangedHere=p=>{const c=pinChanges?.pins?.[p.id];return !!c&&p.status!=='resolved'&&!c.part_changed&&c.near_changed!==true&&!NO_UNCHANGED_BADGE.has(p.issue_class);};
+  const changedHere=p=>{const c=pinChanges?.pins?.[p.id];return !!c&&(c.part_changed||c.near_changed===true);};
   const unchangedTitle=p=>`Nothing within ${pinChanges.radius_mm} mm of this pin changed and its part is unchanged against ${pinChanges.against.label} (build ${pinChanges.against.build}).`;
   async function loadPinChanges(){try{pinChanges=await getJSON('/review/pin-changes.json');}catch(e){pinChanges=null;}renderPins();}
   function setStatus(p,st){
@@ -302,16 +304,17 @@ export function initReview(V){
   function pinItem(p){
     const li=document.createElement('li');li.className='item pin'+(p.id===hotPin?' sel':'');li.dataset.pin=p.id;
     const orphan=orphaned(p),done=p.status==='resolved',sl=statusLine(p),par=p.parent&&S.pins.find(x=>x.id===p.parent);
-    const acts=done?ACT('fly','crosshair','','Fly to this pin')+ACT('reopen','refresh','Reopen','Reopen this pin')+ACT('delete','trash','','Delete pin'):
+    const repin=RP.offer(p,changedHere(p))?ACT('repin','map-pin-exclamation','Repin','Repin: something is still wrong; click the spot that is wrong now (same pin, attempt + 1)','danger'):'';
+    const acts=done?ACT('fly','crosshair','','Fly to this pin')+ACT('reopen','refresh','Reopen','Reopen this pin')+repin+ACT('delete','trash','','Delete pin'):
       ACT('fly','crosshair','','Fly to this pin')+ACT('resolve','check','Resolve','Mark resolved: the pin leaves the list (undo brings it back)')+
       ACT('notfixed','alert-octagon','Not fixed','Not fixed: the last attempt did not fix this; the next packet says so and lists it first','danger')+
-      ACT('followup','corner-down-right','','Add follow-up pin: the next pin you drop follows up this one')+ACT('delete','trash','','Delete pin');
-    li.innerHTML=`<div class="ph"><span class="num sev-${p.severity}${done?' resolved':''}">${p.n}</span>
-      <span class="cls">${esc(label(p.issue_class))}</span><span class="chip">${esc(p.severity)}</span>
+      repin+ACT('followup','corner-down-right','','Add follow-up pin: the next pin you drop follows up this one')+ACT('delete','trash','','Delete pin');
+    li.innerHTML=`<div class="ph"><span class="num sev-${p.severity} g-${groupOf(classes,p.issue_class)}${done?' resolved':''}">${p.n}</span>
+      <span class="cls">${esc(label(p.issue_class))}</span>${groupBadge(classes,groups,p.issue_class)}<span class="chip">${esc(p.severity)}</span>${RP.badge(p)}
       ${p.status==='reopened'?'<span class="chip reopened">reopened</span>':''}${p.status==='not_fixed'?`<span class="chip notfixed">Not fixed, attempt ${p.attempts||1}</span>`:''}
       ${unchangedHere(p)?`<span class="chip same" title="${esc(unchangedTitle(p))}">Unchanged here since your packet</span>`:''}${orphan?'<span class="chip orphan">orphaned</span>':''}</div>
       <div class="acts">${acts}</div>
-      ${par?`<div class="where">follow-up to #${par.n}</div>`:''}
+      ${par?`<div class="where">follow-up to #${par.n}</div>`:''}${RP.was(p)}
       <div class="note">${esc(p.note)||`<span class="muted">${esc(meaningOf(p.issue_class))}</span>`}</div>
       <div class="where">${esc(pinWhere(p))}${p.measure?`, measured ${p.measure.distance.toFixed(2)} mm`:''}</div>
       ${sl?`<div class="hist" title="${esc(sl.tip)}">${esc(sl.t)}</div>`:''}`;
@@ -319,6 +322,7 @@ export function initReview(V){
       if(a==='resolve'){setStatus(p,'resolved');if(hotPin===p.id)hotPin=null;changed();toast(`Pin <b>#${p.n}</b> resolved. Undo brings it back; it is under Resolved.`,false,3000);return;}
       if(a==='reopen'){setStatus(p,'open');hotPin=p.id;changed();return;}
       if(a==='followup'){startFollowUp(p);return;}
+      if(a==='repin'){RP.start(p);return;}
       if(a==='notfixed'){
         if(p.status==='not_fixed'&&p.escalated_build&&p.escalated_build===server?.build){toast(`Pin <b>#${p.n}</b> is already marked not fixed on this build.`,false,3000);return;}
         p.status='not_fixed';p.attempts=(p.attempts||0)+1;p.escalated_build=server?.build||null;p.escalated_at=now();p.updated=now();
@@ -329,7 +333,8 @@ export function initReview(V){
   }
   function renderPins(){
     const ol=$('pin-list');ol.innerHTML='';
-    const active=S.pins.filter(p=>p.status!=='resolved').sort((a,b)=>(a.status!=='not_fixed')-(b.status!=='not_fixed')),done=S.pins.filter(p=>p.status==='resolved');
+    const top=p=>p.status!=='not_fixed'&&!RP.isRepinned(p);         // not fixed and repinned pins first
+    const active=S.pins.filter(p=>p.status!=='resolved').sort((a,b)=>top(a)-top(b)),done=S.pins.filter(p=>p.status==='resolved');
     $('pins-count').textContent=String(active.length);$('pins-sub').textContent=`${active.length} open, ${done.length} resolved`;
     // a follow-up sits indented under its parent while both are open
     const ids=new Set(active.map(p=>p.id)),kids=new Map();
@@ -363,7 +368,7 @@ export function initReview(V){
     for(const p of S.pins){
       if(p.status==='resolved')continue;                         // a resolved pin leaves the model at once
       const el=document.createElement('div'),orphan=orphaned(p);
-      el.className=`pin-marker sev-${p.severity}${p.status==='not_fixed'?' notfixed':''}${orphan?' orphan':''}${p.kind==='region'?' region':''}${p.id===hotPin?' hot':''}`;
+      el.className=`pin-marker sev-${p.severity} g-${groupOf(classes,p.issue_class)}${RP.isRepinned(p)?' repinned':''}${p.status==='not_fixed'?' notfixed':''}${orphan?' orphan':''}${p.kind==='region'?' region':''}${p.id===hotPin?' hot':''}`;
       el.textContent=String(p.n);el.title=`#${p.n} ${label(p.issue_class)}: ${p.note}`+(orphan?' (part missing in this build)':'');el.dataset.pin=p.id;
       el.addEventListener('pointerdown',e=>e.stopPropagation());
       el.addEventListener('click',e=>{e.stopPropagation();flyToPin(p);});
@@ -374,42 +379,117 @@ export function initReview(V){
       else{V.scene.add(o);o.position.set(...(p.anchor?p.anchor.world:V.bbox.getCenter(new THREE.Vector3()).toArray()));}
       markers.set(p.id,o);
     }
+    RP.renderTrails();
     V.dirty();
   }
   // markers follow their part's visibility (CSS2D does not check ancestors)
   function beforeLabels(){
+    measBeforeLabels();
     for(const [,o] of markers){
       const vis=o.userData.key?V.effVisible(o.parent):o.userData.keys?o.userData.keys.some(k=>V.leafShown(k)):true;
       o.visible=vis;
     }
+    RP?.beforeLabels();
   }
 
   // ---- measurements ----
-  let draft=null;
+  // Entity-based (measure.js): each click takes a vertex, an edge or a face point, and a pair reads its true dimension
+  // (edge to edge, vertex to edge, plane to plane, ...). The dimension line is drawn at the true shortest span with
+  // the value as its label; the clicked points' distance, dX/dY/dZ and the angle are in the list row. Unattached
+  // measurements are page state only (the undo history), never written to the project: a reload starts without
+  // them. Attached ones live in their pin's `measure`. Graphics: shown in Measure mode or with Keep visible on;
+  // an attached one also shows while its pin is selected.
+  const MEAS=initMeasure(V);
+  MEAS.setActive(()=>mode==='measure');
+  let draft=null,measView=new Map();                          // measurement id -> {group, objs, box, item}
   function clearMeasDraft(){if(draft){draft.removeFromParent();draft.element.remove();draft=null;}V.dirty();}
-  function drawMeasDraft(i){clearMeasDraft();const el=document.createElement('div');el.className='measure-dot';draft=new CSS2DObject(el);draft.position.set(...i.world);V.scene.add(draft);V.dirty();}
+  function drawMeasDraft(E){clearMeasDraft();if(!E)return;const el=document.createElement('div');el.className='measure-dot draft';draft=new CSS2DObject(el);draft.position.copy(E.world);V.scene.add(draft);V.dirty();}
+  function measureClick(e,h,edge){
+    if(!card.hidden&&dialogCtx)return false;
+    const E=MEAS.pick(e,h,edge);
+    if(!E){toast('Click on a part: an edge, a vertex or a face.',true,2500);return true;}
+    if(!measA){measA=E;drawMeasDraft(E);toast(`First pick: ${MEAS.describe(E)}. Click the second; Esc cancels.`,false,3000);V.dirty();return true;}
+    const r=MEAS.result(measA,E);
+    const m={id:'m'+(S.meas.reduce((n,x)=>Math.max(n,+x.id.slice(1)),0)+1),...r,pin:null};
+    S.meas.push(m);measA=null;clearMeasDraft();changed();
+    toast(`${esc(r.label)}: <b>${m.distance.toFixed(2)} mm</b>${m.angle_deg?`, angle ${m.angle_deg.toFixed(2)} deg`:''}`,false,4000);
+    return true;
+  }
+  let keepVis=false;
+  function measModeChanged(){keepVis=mode==='measure';const k=$('meas-keep');if(k)k.checked=keepVis;MEAS.hideHover();V.dirty();}
+  $('meas-keep').onchange=e=>{keepVis=e.target.checked;V.dirty();};
+  const measShown=m=>keepVis||(!!m.pin&&m.pin===hotPin);
+  function deleteMeas(m){
+    S.meas=S.meas.filter(x=>x!==m);for(const p of S.pins)if(p.measure&&p.measure.id===m.id){p.measure=null;p.updated=now();}
+    changed();
+  }
+  // Delete or Backspace in Measure mode: the measurement under the pointer (its line, label or dots), else the last
+  // unattached one made
+  function measUnderPointer(){
+    const P=MEAS.pointer;if(P.x==null)return null;const hr=V.host.getBoundingClientRect(),px=P.x-hr.left,py=P.y-hr.top;
+    let best=null,bd=9;
+    for(const m of S.meas){const mv=measView.get(m.id);if(!mv||!mv.group.visible)continue;
+      const a=MEAS.toScreen(new THREE.Vector3(...m.a)),b=MEAS.toScreen(new THREE.Vector3(...m.b));
+      const ax=a.x-hr.left,ay=a.y-hr.top,bx=b.x-hr.left,by=b.y-hr.top,dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;
+      const t=l2>0?Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/l2)):0;let d=Math.hypot(ax+t*dx-px,ay+t*dy-py);
+      const s=mv.item.screen;if(s&&Math.abs(px-s.x)<=s.w/2&&Math.abs(py-s.y)<=s.h/2)d=0;
+      if(d<bd){bd=d;best=m;}}
+    return best;
+  }
+  function deleteMeasAtPointer(){
+    const m=measUnderPointer()||[...S.meas].reverse().find(x=>!x.pin);
+    if(!m){toast('No measurement to remove.',false,2000);return;}
+    deleteMeas(m);toast(`Removed the ${m.distance.toFixed(2)} mm measurement. Undo brings it back.`,false,2500);
+  }
+  $('meas-clear').onclick=()=>{
+    const gone=S.meas.filter(m=>!m.pin),kept=S.meas.length-gone.length;
+    if(!gone.length){toast(kept?`Nothing to clear: the ${kept} attached measurement${kept===1?' stays':'s stay'} with ${kept===1?'its pin':'their pins'}.`:'No measurements.',false,3000);return;}
+    S.meas=S.meas.filter(m=>m.pin);changed();
+    toast(`Cleared ${gone.length} measurement${gone.length===1?'':'s'}${kept?`; ${kept} attached to pins stay with their pins`:''}. Undo brings them back.`,false,3500);
+  };
+  function measRow(m){
+    const li=document.createElement('li');li.className='item meas';li.dataset.measure=m.id;
+    const pin=m.pin&&S.pins.find(p=>p.id===m.pin);
+    const opts=S.pins.map(p=>`<option value="${p.id}"${m.pin===p.id?' selected':''}>#${p.n} ${esc(label(p.issue_class))}</option>`).join('');
+    const sec=[];
+    if(m.kind&&m.kind!=='point_point'&&m.point_distance!=null)sec.push(`point to point ${m.point_distance.toFixed(2)} mm`);
+    sec.push(`dX ${m.delta[0].toFixed(2)}, dY ${m.delta[1].toFixed(2)}, dZ ${m.delta[2].toFixed(2)}`);
+    if(m.angle_deg)sec.push(`angle ${m.angle_deg.toFixed(2)} deg`);
+    li.innerHTML=`<div class="r1"><b class="mval">${m.distance.toFixed(2)} mm</b><span class="mkind">${esc(m.label||'point to point')}</span>
+        <span class="acts"><button data-act="delete" title="Delete this measurement (one undo step)" aria-label="Delete measurement"><i class="ic i-trash"></i></button></span></div>
+      <div class="where msec">${esc(sec.join(', '))}</div>
+      <div class="where">${esc(m.a_part?.node||'')} to ${esc(m.b_part?.node||'')}${pin?`; attached to pin #${pin.n}, stays with its pin`:''}</div>
+      <div class="row2"><select data-act="pin" aria-label="Attach to pin"><option value="">attach to pin...</option>${opts}</select></div>`;
+    li.querySelector('[data-act=delete]').onclick=e=>{e.stopPropagation();deleteMeas(m);};
+    li.querySelector('select').onchange=e=>{const pid=e.target.value;for(const p of S.pins){if(p.measure&&p.measure.id===m.id)p.measure=null;}
+      m.pin=pid||null;const p=S.pins.find(x=>x.id===pid);if(p){p.measure={...m};p.updated=now();}changed();};
+    return li;
+  }
   function renderMeas(){
-    for(const o of [...measGroup.children]){o.removeFromParent();if(o.element)o.element.remove();o.geometry?.dispose();}
+    for(const o of [...measGroup.children]){o.traverse(x=>{if(x.element)x.element.remove();x.geometry?.dispose();});o.removeFromParent();}
+    measView.clear();
     const ol=$('measure-list');ol.innerHTML='';
     for(const m of S.meas){
-      const a=new THREE.Vector3(...m.a),b=new THREE.Vector3(...m.b);
+      const a=new THREE.Vector3(...m.a),b=new THREE.Vector3(...m.b),g=new THREE.Group();g.name='Measurement '+m.id;g.userData.measure=m.id;
       const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]),new THREE.LineBasicMaterial({color:0xffd43b,depthTest:false}));
-      line.renderOrder=10;measGroup.add(line);
-      for(const p of [a,b]){const d=document.createElement('div');d.className='measure-dot';const o=new CSS2DObject(d);o.position.copy(p);measGroup.add(o);}
-      const el=document.createElement('div');el.className='measure-label';el.textContent=`${m.distance.toFixed(2)} mm`;
-      const lo=new CSS2DObject(el);lo.position.copy(a.clone().add(b).multiplyScalar(0.5));measGroup.add(lo);
-      const li=document.createElement('li');li.className='item';li.dataset.measure=m.id;
-      const opts=S.pins.map(p=>`<option value="${p.id}"${m.pin===p.id?' selected':''}>#${p.n} ${esc(label(p.issue_class))}</option>`).join('');
-      li.innerHTML=`<div class="r1"><b>${m.distance.toFixed(2)} mm</b><span class="muted">dX ${m.delta[0].toFixed(2)}, dY ${m.delta[1].toFixed(2)}, dZ ${m.delta[2].toFixed(2)}</span>
-        <span class="acts"><button data-act="delete" title="Delete measurement"><i class="ic i-trash"></i></button></span></div>
-        <div class="where">${esc(m.a_part?.node||'')} to ${esc(m.b_part?.node||'')}</div>
-        <div class="row2"><select data-act="pin" aria-label="Attach to pin"><option value="">attach to pin...</option>${opts}</select></div>`;
-      li.querySelector('[data-act=delete]').onclick=()=>{S.meas=S.meas.filter(x=>x!==m);for(const p of S.pins)if(p.measure&&p.measure.id===m.id)p.measure=null;changed();};
-      li.querySelector('select').onchange=e=>{const pid=e.target.value;for(const p of S.pins){if(p.measure&&p.measure.id===m.id)p.measure=null;}
-        m.pin=pid||null;const p=S.pins.find(x=>x.id===pid);if(p){p.measure={...m};p.updated=now();}changed();};
-      ol.append(li);
+      line.renderOrder=10;g.add(line);const objs=[];
+      for(const p of [a,b]){const d=document.createElement('div');d.className='measure-dot';d.dataset.measure=m.id;const o=new CSS2DObject(d);o.position.copy(p);g.add(o);objs.push(o);}
+      // the label is a positioned box inside the CSS2D anchor, so the layout can offset it in screen space
+      const el=document.createElement('div');el.className='measure-anchor';const box=document.createElement('div');box.className='measure-label';box.dataset.measure=m.id;
+      box.textContent=`${m.distance.toFixed(2)} mm`;el.append(box);
+      const lo=new CSS2DObject(el);lo.position.copy(a.clone().add(b).multiplyScalar(0.5));g.add(lo);objs.push(lo);
+      measGroup.add(g);measView.set(m.id,{group:g,objs,box,item:{a,b,box,dots:[a,b]}});
+      ol.append(measRow(m));
     }
+    const un=S.meas.filter(m=>!m.pin).length;$('meas-clear').disabled=!un;
+    $('meas-count').textContent=S.meas.length?`${S.meas.length}${S.meas.length>un?`, ${S.meas.length-un} attached`:''}`:'';
     V.dirty();
+  }
+  // every frame before the labels draw: which measurements show, and where their labels sit
+  function measBeforeLabels(){
+    const items=[];
+    for(const m of S.meas){const mv=measView.get(m.id);if(!mv)continue;const on=measShown(m);mv.group.visible=on;for(const o of mv.objs)o.visible=on;if(on)items.push(mv.item);}
+    if(items.length)MEAS.layout(items);
   }
 
   // ---- scope lock ----
@@ -430,47 +510,188 @@ export function initReview(V){
   }
   $('scope-clear').onclick=()=>{if(S.scope.length){S.scope=[];changed();}};
 
-  // ---- diff ----
-  // the diff choices come from the server, default first: "since your last packet (reviewed HH:MM)" whenever a
-  // packet was sent against another build, then the earlier builds and the manifest versions, each with its time
-  let baselineKey='';
-  function renderBaselines(){
-    const s=$('baseline'),keep=s.value,bl=server?.baselines||[],key=bl.map(b=>b.id).join('|');s.innerHTML='';
-    for(const b of bl){const o=document.createElement('option');o.value=b.id;o.textContent=b.label;o.dataset.kind=b.kind;s.append(o);}
-    if(!s.options.length){const o=document.createElement('option');o.value='';o.textContent='no baseline yet (appears after a rebuild or a packet)';s.append(o);}
-    // a new list (a packet was sent, a build appeared) goes back to the default; otherwise the pick stays
-    if(key===baselineKey&&[...s.options].some(o=>o.value===keep))s.value=keep;else s.value=s.options[0].value;
-    baselineKey=key;
-  }
+  // ---- Revisions (the Diff tab): one list, newest first: the current build ("now"), then every earlier revision
+  // the server keeps (the reviewed build, earlier builds, manifest versions), each with how many parts differ from
+  // now. Clicking a row draws that revision over the current model as a green hologram (the differing parts, or the
+  // whole old model) and lists what changed under it; clicking it again or Esc turns it off; hovering another row
+  // previews it; arrow keys step through the list; holding \ or Show old swaps in the old revision solid. ----
+  let revRows=[],revSel=null,revPre=null,revPeek=null,revKey='',revFetch=null,flick=false;
+  const hhmm=iso=>{if(!iso)return '';const d=new Date(iso);return isNaN(d)?'':d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false});};
   const reviewedChoice=()=>(server?.baselines||[]).find(b=>b.kind==='reviewed')||null;
+  function revLabel(b){
+    if(b.kind==='reviewed')return {t:hhmm(b.reviewed_at||b.created),lab:'what you reviewed',sub:`build ${b.build||''}, packet ${b.packet||''}`};
+    if(b.kind==='version')return {t:'',lab:b.label.replace(/^version (.*) \(from the manifest\)$/,'version $1'),sub:'from the manifest'};
+    return {t:hhmm(b.created),lab:/^previous/.test(b.label)?'previous build':'earlier build',sub:`build ${b.build||''}`};
+  }
+  async function loadRevisionCounts(){
+    const key=(server?.build||'')+'|'+(server?.baselines||[]).map(b=>b.id).join('|');
+    if(key===revKey&&revRows.length)return;revKey=key;
+    const f=revFetch=getJSON('/review/revisions.json').catch(e=>({rows:[],error:e.message}));
+    const r=await f;if(f!==revFetch)return;
+    revRows=r.rows||[];$('rev-size').textContent=r.size_bytes!=null?`Stored revisions ${(r.size_bytes/1048576).toFixed(1)} MB, keeps ${r.keep} earlier builds`:'';
+    renderBaselines();
+  }
+  function renderBaselines(){
+    const ol=$('rev-list');if(!ol)return;const bl=server?.baselines||[],cnt=new Map(revRows.map(r=>[r.id,r]));
+    if(revSel&&!bl.some(b=>b.id===revSel))holoOff(false);
+    if(revPre&&!bl.some(b=>b.id===revPre))revPre=null;
+    let h=`<li class="now" data-rev=""><div class="r1"><span class="t">now</span><span class="lab">current build</span></div><div class="sub">build ${esc(server?.build||'')}</div></li>`;
+    for(const b of bl){const L=revLabel(b),c=cnt.get(b.id),n=c?.differ;
+      const cls=[b.id===revSel?'sel':'',b.id===revPre?'pre':'',b.id===revPeek?'peek':'',holoLoading===b.id?'loading':''].filter(Boolean).join(' ');
+      h+=`<li class="${cls}" data-rev="${esc(b.id)}" role="option" aria-selected="${b.id===revSel}" title="${esc(b.label)}"><div class="r1"><span class="t">${esc(L.t)}</span><span class="lab">${esc(L.lab)}</span></div>
+        <div class="sub">${n==null?(c?'not readable':'counting...'):n===0?'same as now':`${n} part${n===1?'':'s'} differ from now`}${L.sub?', '+esc(L.sub):''}</div></li>`;}
+    if(!bl.length)h+=`<li class="now"><div class="sub">No earlier revision yet: one appears after a rebuild or a packet.</div></li>`;
+    ol.innerHTML=h;
+    ol.querySelectorAll('li[data-rev]').forEach(li=>{const id=li.dataset.rev;if(!id)return;
+      li.onclick=()=>{clearTimeout(peekT);revPeek=null;if(revSel===id)holoOff();else selectRev(id);};
+      li.onmouseenter=()=>{clearTimeout(peekT);if(id!==revSel)peekT=setTimeout(()=>peekRev(id),350);};
+      li.onmouseleave=()=>{clearTimeout(peekT);if(revPeek===id)peekRev(null);};});
+    loadRevisionCounts();
+  }
+  let peekT=0;
+  async function peekRev(id){revPeek=id;await showHolo(id||revSel);renderBaselines();}
+  async function selectRev(id,auto=false){
+    revSel=id;revPre=id;renderBaselines();
+    const d=await runDiff(id,auto);
+    if(revSel===id)await showHolo(id);
+    return d;
+  }
+  function holoOff(render=true){revSel=null;revPeek=null;setFlick(false);showHolo(null);if(render)renderBaselines();}
+  $('rev-list').addEventListener('keydown',e=>{
+    const ids=(server?.baselines||[]).map(b=>b.id);if(!ids.length)return;
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();e.stopPropagation();
+      const i=ids.indexOf(revSel??revPre),n=e.key==='ArrowDown'?Math.min(ids.length-1,i+1):Math.max(0,i<0?0:i-1);selectRev(ids[n]);}
+    else if(e.key==='Enter'&&!revSel&&revPre){e.preventDefault();selectRev(revPre);}
+  });
+  $('rev-whole').onchange=()=>showHolo(revPeek||revSel);
+  $('rev-more-btn').onclick=()=>{const o=$('rev-more').hidden;$('rev-more').hidden=!o;$('rev-more-btn').setAttribute('aria-expanded',String(o));};
+  $('rev-clear').onclick=async()=>{
+    try{const r=await post('/review/revisions/clear',{});server.baselines=r.baselines;revKey='';renderBaselines();
+      toast(`Cleared ${r.removed.length} old revision${r.removed.length===1?'':'s'}; reviewed ones and the current build stay.`);}catch(e){}};
+  // the hologram: green feature edges (bright where seen, dimmer through the solid model), a fine wireframe on
+  // smaller parts and faint additive faces. Line depth is pulled a hair toward the camera so old edges that lie on
+  // the new surface do not shimmer; faces skip the depth test. On a light background it is a darker green with
+  // normal blending (additive green washes out on white).
+  const holo=new THREE.Group();holo.name='Revision hologram';holo.visible=false;V.scene.add(holo);
+  const oldSolid=new THREE.Group();oldSolid.name='Old revision (flick)';oldSolid.visible=false;V.scene.add(oldSolid);
+  let holoKey='',holoDark=null,holoLoading=null;
+  const revCache=new Map();                                    // revision id -> Promise of Map(part name -> [{geometry, matrix}])
+  const edgeCache=new WeakMap(),wireCache=new WeakMap();
+  const bias=m=>{m.onBeforeCompile=sh=>{sh.vertexShader=sh.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n  gl_Position.z-=3e-6*gl_Position.w;');};m.customProgramCacheKey=()=>'holo-bias';return m;};
+  const HM={};
+  function holoMats(dark){
+    const add=dark?THREE.AdditiveBlending:THREE.NormalBlending,col=new THREE.Color(dark?'#39ff88':'#0b7a37');
+    for(const m of Object.values(HM))m.dispose();
+    HM.edge=bias(new THREE.LineBasicMaterial({color:col,transparent:true,opacity:1,blending:add,depthWrite:false}));
+    HM.hidden=new THREE.LineBasicMaterial({color:col,transparent:true,opacity:dark?0.3:0.35,blending:add,depthWrite:false,depthTest:false});
+    HM.wire=bias(new THREE.LineBasicMaterial({color:col,transparent:true,opacity:dark?0.1:0.12,blending:add,depthWrite:false}));
+    HM.face=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:dark?0.04:0.05,blending:add,depthWrite:false,depthTest:false,side:THREE.DoubleSide});
+    HM.solid=new THREE.MeshStandardMaterial({color:'#9fd8b4',roughness:0.7,metalness:0.05,side:THREE.DoubleSide});
+    holoDark=dark;
+    holo.traverse(o=>{if(o.userData.holo)o.material=HM[o.userData.holo];});oldSolid.traverse(o=>{if(o.isMesh)o.material=HM.solid;});
+  }
+  const darkBg=()=>V.host.classList.contains('dark-bg');
+  function loadRev(id){
+    if(revCache.has(id))return revCache.get(id);
+    const p=(async()=>{
+      const out=new Map(),loader=new GLTFLoader();
+      const nf=(server?.baselines||[]).find(b=>b.id===id)?.files||1;
+      for(let i=0;i<nf;i++){
+        const r=await V.fetch(`/review/baseline/${encodeURIComponent(id)}/models/${i}`);if(!r.ok)break;
+        const buf=await r.arrayBuffer();if(new TextDecoder().decode(new Uint8Array(buf,0,4))!=='glTF')continue;
+        const g=await loader.parseAsync(buf,''),js=g.parser.json,seen=new Map();
+        g.scene.updateMatrixWorld(true);
+        g.scene.traverse(o=>{if(!o.isMesh)return;const a=g.parser.associations.get(o);
+          let nm=(a&&a.nodes!==undefined&&js.nodes[a.nodes]?.name)||o.name;
+          if(!a||a.nodes===undefined){const pa=g.parser.associations.get(o.parent);if(pa&&pa.nodes!==undefined)nm=js.nodes[pa.nodes].name||nm;}
+          const c=seen.get(nm)||0;seen.set(nm,c+1);const key=c?`${nm} #${c+1}`:nm;
+          if(!out.has(key))out.set(key,[]);out.get(key).push({geometry:o.geometry,matrix:o.matrixWorld.clone()});});
+      }
+      return out;
+    })();
+    revCache.set(id,p);
+    while(revCache.size>3){const [k,v]=revCache.entries().next().value;revCache.delete(k);
+      if(k!==id)v.then(m=>{for(const l of m.values())for(const x of l){x.geometry.dispose();}}).catch(()=>{});}
+    p.catch(()=>revCache.delete(id));
+    return p;
+  }
+  function clearGroup(g){for(const o of [...g.children])o.removeFromParent();}
+  async function showHolo(id){
+    if(!id){holo.visible=false;holoKey='';clearGroup(holo);V.dirty();return;}
+    const row=revRows.find(r=>r.id===id),whole=$('rev-whole').checked;
+    const key=id+'|'+whole+'|'+(row?.parts||[]).join(',');
+    if(key===holoKey){holo.visible=!flick;V.dirty();return;}
+    holoLoading=id;renderBaselines();
+    let parts;try{parts=await loadRev(id);}catch(e){holoLoading=null;toast('Could not load that revision: '+esc(e.message),true);renderBaselines();return;}
+    holoLoading=null;
+    if((revPeek||revSel)!==id){renderBaselines();return;}                 // another row was picked meanwhile
+    if(holoDark===null||holoDark!==darkBg())holoMats(darkBg());
+    clearGroup(holo);
+    const want=whole?null:new Set(row?.parts||(diff&&diff.a.id===id?diff.parts.filter(r=>['changed','moved','removed'].includes(r.status)).map(r=>r.name):[]));
+    for(const [name,list] of parts){
+      if(want&&!want.has(name))continue;
+      for(const {geometry,matrix} of list){
+        const add=(obj,kind,order)=>{obj.matrixAutoUpdate=false;obj.matrix.copy(matrix);obj.userData.holo=kind;obj.userData.holoOf=name;obj.renderOrder=order;obj.raycast=()=>{};holo.add(obj);};
+        let eg=edgeCache.get(geometry);if(!eg){eg=new THREE.EdgesGeometry(geometry,35);edgeCache.set(geometry,eg);}
+        add(new THREE.Mesh(geometry,HM.face),'face',20);
+        add(new THREE.LineSegments(eg,HM.hidden),'hidden',21);add(new THREE.LineSegments(eg,HM.edge),'edge',22);
+        const tris=geometry.index?geometry.index.count/3:geometry.attributes.position.count/3;
+        if(tris<=60000&&!whole||tris<=8000){let wg=wireCache.get(geometry);if(!wg){wg=new THREE.WireframeGeometry(geometry);wireCache.set(geometry,wg);}add(new THREE.LineSegments(wg,HM.wire),'wire',21);}
+      }
+    }
+    holoKey=key;holo.visible=!flick;renderBaselines();V.dirty();
+  }
+  // flick: while held, the old revision solid replaces the current model; release brings the current model back
+  async function setFlick(on){
+    const id=revPeek||revSel||revPre;
+    if(on&&!id){toast('Pick a revision first.',true,2500);return;}
+    flick=!!on;$('rev-flick').classList.toggle('on',flick);
+    if(flick){
+      const parts=await loadRev(id);if(!flick)return;
+      if(holoDark===null)holoMats(darkBg());
+      if(oldSolid.userData.rev!==id){clearGroup(oldSolid);
+        for(const list of parts.values())for(const {geometry,matrix} of list){const m=new THREE.Mesh(geometry,HM.solid);m.matrixAutoUpdate=false;m.matrix.copy(matrix);m.raycast=()=>{};oldSolid.add(m);}
+        oldSolid.userData.rev=id;}
+    }
+    oldSolid.visible=flick;if(V.modelRoot)V.modelRoot.visible=!flick;holo.visible=!flick&&!!holoKey;V.dirty();
+  }
+  const flickBtn=$('rev-flick');
+  flickBtn.addEventListener('pointerdown',e=>{e.preventDefault();flickBtn.setPointerCapture?.(e.pointerId);setFlick(true);});
+  for(const ev of ['pointerup','pointercancel','lostpointercapture'])flickBtn.addEventListener(ev,()=>{if(flick)setFlick(false);});
+  flickBtn.addEventListener('keydown',e=>{if((e.key===' '||e.key==='Enter')&&!e.repeat){e.preventDefault();setFlick(true);}});
+  flickBtn.addEventListener('keyup',e=>{if(e.key===' '||e.key==='Enter')setFlick(false);});
+  const typingIn=t=>t&&(t.tagName==='TEXTAREA'||(t.tagName==='INPUT'&&!['checkbox','radio','range'].includes(t.type))||t.isContentEditable);
+  addEventListener('keydown',e=>{if(e.key==='\\'&&!e.repeat&&!e.metaKey&&!e.ctrlKey&&!typingIn(e.target)){e.preventDefault();setFlick(true);}});
+  addEventListener('keyup',e=>{if(e.key==='\\'&&flick)setFlick(false);});
+  addEventListener('blur',()=>{if(flick)setFlick(false);});
+  // keep the hologram readable when the background changes between light and dark
+  function holoTheme(){if(holo.visible&&holoDark!==null&&holoDark!==darkBg()){holoMats(darkBg());V.dirty();}}
+
   async function runDiff(against,auto=false){
     if(!against){toast('No baseline to compare against yet.',true);return null;}
-    $('diff-out').innerHTML='<p class="hint">Comparing...</p>';$('diff-run').disabled=true;
+    $('diff-out').innerHTML='<p class="hint">Comparing...</p>';
     try{diff=await getJSON('/review/diff.json?against='+encodeURIComponent(against));}
-    catch(e){$('diff-out').innerHTML=`<p class="hint">${esc(e.message)}</p>`;$('diff-run').disabled=false;return null;}
-    $('diff-run').disabled=false;
+    catch(e){$('diff-out').innerHTML=`<p class="hint">${esc(e.message)}</p>`;return null;}
     diffByNode=new Map(diff.parts.map(r=>[r.name,r]));
     if(diff.reopened?.length){await loadState(true);rerender();toast(`${diff.reopened.length} resolved pin(s) reopened: their part changed again.`,true);}
     renderDiff(auto);V.retint();
     if($('diff-ghost').checked)await loadGhost(against);
     return diff;
   }
-  $('diff-run').onclick=()=>{showTab('diff');runDiff($('baseline').value);};
   $('diff-tint').onchange=()=>V.retint();
   $('diff-all').onchange=()=>renderDiff();
-  $('diff-ghost').onchange=async()=>{if($('diff-ghost').checked){await loadGhost(diff?.a?.id||$('baseline').value);}ghost.visible=$('diff-ghost').checked;V.dirty();};
+  $('diff-ghost').onchange=async()=>{if($('diff-ghost').checked){await loadGhost(diff?.a?.id||revSel||revPre);}ghost.visible=$('diff-ghost').checked;V.dirty();};
   function renderDiff(auto=false){
     const out=$('diff-out');if(!diff){out.innerHTML='';return;}
     const s=diff.summary,col=diff.collateral,nk=nodeKey();
     $('diff-count').textContent=String(s.changed+s.moved+s.added+s.removed||'');$('diff-count').classList.toggle('bad',col.length>0);
-    let h='';
-    if(diff.scope==null)h+=`<div class="banner ok">No scope lock set, so nothing is judged collateral. Mark the parts that may change (Scope mode) before the next edit.</div>`;
-    else if(col.length)h+=`<div class="banner"><b>COLLATERAL: ${col.length} part${col.length===1?'':'s'} changed outside the scope lock</b><ul>${col.slice(0,12).map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>`;
-    else h+=`<div class="banner ok">No collateral: every change is inside the scope lock (${diff.scope.length} part${diff.scope.length===1?'':'s'}).</div>`;
+    let h=keepBanner(diff);                                        // keep pins whose neighbourhood changed, first
+    if(diff.keep?.length)$('diff-count').classList.add('bad');
+    if(diff.scope!=null&&col.length)h+=`<div class="banner"><b>COLLATERAL: ${col.length} part${col.length===1?'':'s'} changed outside the scope lock</b><ul>${col.slice(0,12).map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>`;
+    else if(diff.scope!=null)h+=`<div class="banner ok">No collateral: every change is inside the scope lock (${diff.scope.length} part${diff.scope.length===1?'':'s'}).</div>`;
     h+=`<div class="diffhead"><span class="chip ${diff.a.kind==='reviewed'?'reviewed':''}">${diff.a.kind==='reviewed'?'old vs fixed':esc(diff.a.kind||'baseline')}</span>
-      <span>Current build against <b>${esc(diff.a.label)}</b></span></div>
-      <div class="muted">${auto?'Ran automatically. ':''}${diff.seconds} s</div>
-      <div class="counts"><span class="chip changed">${s.changed} changed</span><span class="chip moved">${s.moved} moved</span><span class="chip added">${s.added} added</span><span class="chip removed">${s.removed} removed</span><span class="chip">${s.unchanged} unchanged</span>${s.warnings?`<span class="chip warn">${s.warnings} warnings</span>`:''}</div><ol id="diff-list">`;
+      <span>Now against <b>${esc(diff.a.label)}</b></span></div>
+      <div class="counts"><span class="chip changed">${s.changed} changed</span><span class="chip moved">${s.moved} moved</span><span class="chip added">${s.added} added</span><span class="chip removed">${s.removed} removed</span>${s.warnings?`<span class="chip warn">${s.warnings} warnings</span>`:''}</div><ol id="diff-list">`;
     for(const r of diff.parts){
       if(r.status==='unchanged'&&!$('diff-all').checked)continue;
       const d=r.delta,k=nk.get(r.name);
@@ -483,30 +704,20 @@ export function initReview(V){
     if(diff.warnings.length)h+=`<p class="hint">Detector warnings are hints from the meshes, not errors.</p>`;
     out.innerHTML=h;
     out.querySelectorAll('[data-part]').forEach(li=>li.onclick=()=>{const k=nk.get(li.dataset.part);if(k){V.select(k);V.camAction(()=>V.focusKey(k));V.commit();}
-      else{$('diff-ghost').checked=true;$('diff-ghost').onchange();}});
+      else if(diff?.a?.id&&revSel!==diff.a.id)selectRev(diff.a.id);});
   }
-  // the baseline's shapes of every part that is not unchanged, translucent orange, for "what did it look like"
+  // the baseline's shapes of every part that is not unchanged, translucent orange (More > Ghost baseline, and the
+  // tour's before shapes); the geometry comes from the same revision cache as the hologram
   async function loadGhost(against){
     if(!against||!diff)return;
     const want=new Set(diff.parts.filter(r=>r.status!=='unchanged'&&r.status!=='added').map(r=>r.name));
     const gk=against+'|'+[...want].sort().join('|');
     if(ghostKey===gk){ghost.visible=true;V.dirty();return;}
-    for(const o of [...ghost.children]){o.removeFromParent();o.geometry?.dispose();}
+    for(const o of [...ghost.children])o.removeFromParent();
     const mat=new THREE.MeshBasicMaterial({color:0xff7b29,transparent:true,opacity:0.28,depthWrite:false,side:THREE.DoubleSide});
-    const loader=new GLTFLoader();
-    const nf=(server?.baselines||[]).find(b=>b.id===against)?.files||1;
-    for(let i=0;i<nf;i++){
-      const r=await V.fetch(`/review/baseline/${encodeURIComponent(against)}/models/${i}`);if(!r.ok)break;
-      const buf=await r.arrayBuffer();if(new TextDecoder().decode(new Uint8Array(buf,0,4))!=='glTF')continue;
-      const g=await loader.parseAsync(buf,''),js=g.parser.json,seen=new Map();
-      g.scene.updateMatrixWorld(true);
-      g.scene.traverse(o=>{if(!o.isMesh)return;const a=g.parser.associations.get(o);
-        let nm=(a&&a.nodes!==undefined&&js.nodes[a.nodes]?.name)||o.name;
-        if(!a||a.nodes===undefined){const pa=g.parser.associations.get(o.parent);if(pa&&pa.nodes!==undefined)nm=js.nodes[pa.nodes].name||nm;}
-        const c=seen.get(nm)||0;seen.set(nm,c+1);const key=c?`${nm} #${c+1}`:nm;
-        if(!want.has(key))return;
-        const m=new THREE.Mesh(o.geometry,mat);m.matrixAutoUpdate=false;m.matrix.copy(o.matrixWorld);m.userData.ghostOf=key;m.raycast=()=>{};ghost.add(m);});
-    }
+    const parts=await loadRev(against);
+    for(const [key,list] of parts){if(!want.has(key))continue;
+      for(const {geometry,matrix} of list){const m=new THREE.Mesh(geometry,mat);m.matrixAutoUpdate=false;m.matrix.copy(matrix);m.userData.ghostOf=key;m.raycast=()=>{};ghost.add(m);}}
     ghostKey=gk;ghost.visible=$('diff-ghost').checked||tourIdx>=0;V.dirty();
   }
   function tintFor(key){
@@ -533,13 +744,14 @@ export function initReview(V){
       h+=`<div class="item sel"><div class="r1"><b>Stop ${tourIdx+1} of ${t.stops.length}</b><span class="chip ${st.kind||''}">${esc(st.kind||'change')}</span>${dec?`<span class="chip ${dec.decision}">${dec.decision}</span>`:''}</div>
         <div class="note">${esc(st.note)}</div><div class="where">${esc(st.parts.join(', '))}</div>
         <div class="row2"><button id="tour-prev"><i class="ic i-chevron-left"></i>Prev</button><button id="tour-next">Next<i class="ic i-chevron-right"></i></button>
-        <span class="grow"></span><button id="tour-accept" class="primary"><i class="ic i-circle-check"></i>Accept</button><button id="tour-reject"><i class="ic i-circle-x"></i>Reject</button></div></div>`;
+        <span class="grow"></span><button id="tour-accept" class="primary"><i class="ic i-circle-check"></i>Accept</button><button id="tour-reject"><i class="ic i-circle-x"></i>Reject</button><button id="tour-repin" class="danger" title="Repin: this stop is presented as done but something is still wrong; click the spot that is wrong now"><i class="ic i-map-pin-exclamation"></i>Repin</button></div></div>`;
     }else h+=`<div class="row2"><button id="tour-start" class="primary"><i class="ic i-player-play"></i>Start tour</button></div>`;
     h+='<ol>'+t.stops.map((s,i)=>{const d=S.decisions[s.id];return `<li class="item${i===tourIdx?' sel':''}" data-stop="${i}"><div class="r1"><b>${i+1}</b><span class="cls">${esc(s.parts.join(', '))}</span>${d?`<span class="chip ${d.decision}">${d.decision}</span>`:''}</div><div class="where">${esc(s.note)}</div></li>`;}).join('')+'</ol>';
     out.innerHTML=h;
     const on=(id,f)=>{const b=$(id);if(b)b.onclick=f;};
     on('tour-start',()=>goStop(0));on('tour-prev',()=>goStop(Math.max(0,tourIdx-1)));on('tour-next',()=>goStop(Math.min(t.stops.length-1,tourIdx+1)));
     on('tour-accept',()=>decide('accept'));on('tour-reject',()=>decide('reject'));
+    on('tour-repin',()=>{const st=t.stops[tourIdx];if(st)RP.start(RP.stopPin(st),st);});
     out.querySelectorAll('[data-stop]').forEach(li=>li.onclick=()=>goStop(+li.dataset.stop));
   }
   async function goStop(i){
@@ -568,9 +780,7 @@ export function initReview(V){
   // ---- issues ----
   function renderIssues(){
     const out=$('issues-out'),tot=server?.issues?.total||{},op=server?.issues?.open||{};
-    const max=Math.max(1,...Object.values(tot));
-    const rows=classes.map(c=>({c,n:tot[c.id]||0,o:op[c.id]||0})).sort((a,b)=>b.n-a.n||a.c.label.localeCompare(b.c.label));
-    out.innerHTML=rows.map(r=>`<div class="bar" title="${esc(r.c.hint||'')}"><span class="bl">${esc(r.c.label)}</span><span class="bt"><span class="bf" style="display:block;width:${(100*r.n/max).toFixed(1)}%"></span></span><span class="bn">${r.n}${r.o?` (${r.o} open)`:''}</span></div>`).join('')+
+    out.innerHTML=issuesHTML(classes,groups,tot,op)+                // by group, then class (pin_groups.js)
       `<p class="hint">Counts every pin ever created in this project (resolved ones too), from .cadreview/history.jsonl.</p>`;
   }
 
@@ -586,13 +796,13 @@ export function initReview(V){
     const out=document.createElement('canvas');out.width=W;out.height=H;const g=out.getContext('2d');g.drawImage(src,0,0);
     const marks=[],v=new THREE.Vector3(),SEV={high:'#d1242f',medium:'#bc4c00',low:'#9a6700'};
     for(const o of edgeOverlays()){if(!o.pin||!V.effVisible(o.mesh))continue;const p=S.pins.find(x=>x.id===o.pin);
-      for(const run of V.edgeScreen(o,src.clientWidth,src.clientHeight))for(const [w,c] of [[7,'#ffffff'],[3.5,SEV[p.severity]]]){
+      for(const run of V.edgeScreen(o,src.clientWidth,src.clientHeight))for(const [w,c] of [[7,'#ffffff'],[3.5,groupFill(classes,p.issue_class)]]){
         g.beginPath();run.forEach(([x,y],i)=>i?g.lineTo(x*dpr,y*dpr):g.moveTo(x*dpr,y*dpr));g.lineWidth=w*dpr;g.strokeStyle=c;g.lineCap=g.lineJoin='round';g.stroke();}}
     for(const p of S.pins){
       const o=markers.get(p.id);if(!o||!o.visible||p.status==='resolved')continue;
       o.getWorldPosition(v);v.project(V.cam);if(v.z<-1||v.z>1)continue;
       const x=(v.x*0.5+0.5)*W,y=(0.5-v.y*0.5)*H-21*dpr;if(x<0||y<0||x>W||y>H)continue;
-      const r=15*dpr;g.beginPath();g.arc(x,y,r,0,Math.PI*2);g.fillStyle=p.severity==='high'?'#d1242f':p.severity==='medium'?'#bc4c00':'#9a6700';g.fill();
+      const r=15*dpr;g.beginPath();g.arc(x,y,r,0,Math.PI*2);g.fillStyle=groupFill(classes,p.issue_class);g.fill();
       g.lineWidth=3*dpr;g.strokeStyle='#ffffff';g.stroke();g.fillStyle='#ffffff';g.font=`800 ${15*dpr}px -apple-system,system-ui,sans-serif`;
       g.textAlign='center';g.textBaseline='middle';g.fillText(String(p.n),x,y+1*dpr);marks.push({n:p.n,x:+(x/dpr).toFixed(1),y:+(y/dpr).toFixed(1),pin:p.id});
     }
@@ -627,8 +837,9 @@ export function initReview(V){
     try{await loadState(first);}catch(e){console.warn('review state',e.message);return;}
     rerender();
     const def=(server.baselines||[])[0],rv=reviewedChoice();
-    if(!first&&def){$('baseline').value=def.id;await runDiff(def.id,true);showTab('diff');}
-    else if(first&&rv){$('baseline').value=rv.id;await runDiff(rv.id,true);}
+    // the default revision is preselected and compared, but its hologram stays off until he clicks it
+    if(!first&&def){revPre=def.id;await runDiff(def.id,true);showTab('diff');renderBaselines();}
+    else if(first&&rv){revPre=rv.id;await runDiff(rv.id,true);renderBaselines();}
     if(rv)await loadPinChanges();else if(pinChanges){pinChanges=null;renderPins();}
   }
   function onStatus(st){
@@ -640,14 +851,17 @@ export function initReview(V){
     if(c!==lastCam&&V.ready){lastCam=c;post('/review/camera',{camera:V.camera(),selection:V.sel?V.partRef(V.sel.key):null}).catch(()=>{});}
   }
 
+  RP=initRepin({V,THREE,CSS2DObject,$,S,server:()=>server,setMode,openDialog,changed,now,esc,label,meaningOf,keyFor,meshOf,boxOf,nodeKey,toast,
+    setHot:id=>{hotPin=id;},markerOf:id=>markers.get(id)});
   document.body.classList.remove('no-panel');$('panel').hidden=false;$('send').hidden=false;
   setMode('select');
   // edge lines the page draws over the view: open edge pins in their pin colour, and the edge of the pin being edited
   function edgeOverlays(){
     const out=[];
     for(const p of S.pins){if(p.kind!=='edge'||!p.edge||p.status==='resolved'||!p.anchor)continue;const k=keyFor(p.anchor.part);
-      if(k)out.push({mesh:meshOf(k),pts:p.edge.points,cls:'sev-'+p.severity,pin:p.id});}
+      if(k)out.push({mesh:meshOf(k),pts:p.edge.points,cls:'sev-'+p.severity+' g-'+groupOf(classes,p.issue_class),pin:p.id});}
     if(!card.hidden&&dialogCtx?.kind==='edge'&&dialogCtx.info.mesh)out.push({mesh:dialogCtx.info.mesh,pts:dialogCtx.edge.points,cls:'draft'});
+    if(mode==='measure'&&measA?.type==='edge')out.push({mesh:measA.mesh,pts:measA.chain.pts,cls:'draft'});
     return out;
   }
   function editorState(){
@@ -656,11 +870,15 @@ export function initReview(V){
     return {open:true,kind:dialogCtx?.kind,card:{x:cr.x,y:cr.y,w:cr.width,h:cr.height},
       point:anchorPx?{x:hr.x+anchorPx.x,y:hr.y+anchorPx.y}:null,dragged:!!cardOffset};
   }
-  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,afterRender:placeCard,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
-    state:()=>({mode,followParent,pins:S.pins.map(p=>({id:p.id,n:p.n,status:p.status,issue_class:p.issue_class,kind:p.kind,parts:p.parts.length,orphaned:orphaned(p),measure:!!p.measure,parent:p.parent||null,attempts:p.attempts||0})),
+  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,afterRender:()=>{placeCard();holoTheme();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
+    state:()=>({mode,followParent,repin:RP.state(),pins:S.pins.map(p=>({id:p.id,n:p.n,status:p.status,issue_class:p.issue_class,group:groupOf(classes,p.issue_class),repinned:RP.isRepinned(p),history:(p.history||[]).length,kind:p.kind,parts:p.parts.length,orphaned:orphaned(p),measure:!!p.measure,parent:p.parent||null,attempts:p.attempts||0})),
       pinChanges:pinChanges?{against:pinChanges.against,unchanged:Object.keys(pinChanges.pins||{}).filter(id=>{const p=S.pins.find(x=>x.id===id);return p&&unchangedHere(p);})}:null,
-      next:S.next,scope:S.scope.map(p=>p.node),measurements:S.meas.map(m=>m.distance),decisions:S.decisions,tourIdx,
+      next:S.next,scope:S.scope.map(p=>p.node),measurements:S.meas.map(m=>m.distance),measureKinds:S.meas.map(m=>m.kind||'point_point'),measPending:measA?measA.type:null,measKeep:keepVis,decisions:S.decisions,tourIdx,
       diff:diff?{against:diff.a.id,kind:diff.a.kind||null,b:diff.b.build,summary:diff.summary,collateral:diff.collateral,tinted:V.meshList.filter(m=>tintFor(m.userData.key)).length}:null,
-      editor:editorState(),ghost:ghost.children.length,ghostVisible:ghost.visible,markers:[...markers.values()].filter(o=>o.visible).length,lastPacket,
+      editor:editorState(),ghost:ghost.children.length,ghostVisible:ghost.visible,
+      revisions:{selected:revSel,preselected:revPre,peek:revPeek,rows:(server?.baselines||[]).map(b=>({id:b.id,kind:b.kind,differ:revRows.find(r=>r.id===b.id)?.differ??null}))},
+      holo:{visible:holo.visible,parts:new Set(holo.children.map(o=>o.userData.holoOf)).size,edges:holo.children.filter(o=>o.userData.holo==='edge').length,
+        wire:holo.children.filter(o=>o.userData.holo==='wire').length,dark:holoDark,color:HM.edge?'#'+HM.edge.color.getHexString():null,
+        blending:HM.edge?.blending===THREE.AdditiveBlending?'additive':'normal',flick,oldSolid:oldSolid.visible?oldSolid.children.length:0,modelVisible:V.modelRoot?.visible??true},markers:[...markers.values()].filter(o=>o.visible).length,lastPacket,
       build:server?.build,project:server?.project,baselines:(server?.baselines||[]).map(b=>b.id)})};
 }

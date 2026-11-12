@@ -70,46 +70,69 @@
     <div class="h">Explode</div>
     <div class="slider"><span class="lab">0 to 1</span><input type="range" id="explode" min="0" max="1" step="0.01" value="0"><span class="val" id="explodev">0.00</span></div>
   </section>
+  <section class="ctl" id="weightbox" aria-label="Weight estimate">
+    <div class="h"><i class="ic i-weight"></i>Weight <span class="muted">estimate</span></div>
+    <select id="weight-material" aria-label="Material"></select>
+    <label class="wprint" id="weight-print-row"><input type="checkbox" id="weight-printed"> Printed: infill <input type="number" id="weight-infill" min="0" max="100" step="5" value="20" aria-label="Infill percent"> %, walls <input type="number" id="weight-walls" min="0" max="10" step="0.1" value="1.2" aria-label="Wall thickness mm"> mm</label>
+    <div id="weight-out" aria-live="polite"></div>
+  </section>
 </aside>
 <main id="view"><canvas id="c"></canvas><div id="camnote" hidden><span id="camnote-t"></span></div><div id="tip"></div><div id="modehint" hidden></div><div id="rect" hidden></div><div id="triad-label">X red, Y green, Z blue</div>
+<div id="cube-nav" role="toolbar" aria-label="View cube">
+  <button id="cube-home" title="Home view (H)" aria-label="Home view"><i class="ic i-home"></i></button>
+  <button id="cube-roll-ccw" title="Rotate the view 90 degrees counter-clockwise" aria-label="Rotate the view counter-clockwise"><i class="ic i-rotate"></i></button>
+  <button id="cube-roll-cw" title="Rotate the view 90 degrees clockwise" aria-label="Rotate the view clockwise"><i class="ic i-rotate-clockwise"></i></button>
+  <button id="cube-up" class="tri" title="Rotate to the face above" aria-label="Rotate to the face above"><i class="ic i-caret-up"></i></button>
+  <button id="cube-left" class="tri" title="Rotate to the face on the left" aria-label="Rotate to the face on the left"><i class="ic i-caret-left"></i></button>
+  <button id="cube-right" class="tri" title="Rotate to the face on the right" aria-label="Rotate to the face on the right"><i class="ic i-caret-right"></i></button>
+  <button id="cube-down" class="tri" title="Rotate to the face below" aria-label="Rotate to the face below"><i class="ic i-caret-down"></i></button>
+</div>
 <svg id="overlay" aria-hidden="true"><g id="edge-lines"></g><line id="pin-leader" x1="0" y1="0" x2="0" y2="0"></line></svg>
 <div id="pin-dialog" class="pin-card" role="dialog" aria-modal="false" aria-labelledby="pin-dialog-h" hidden>
     <div class="dlgh" id="pin-grip" title="Drag to move"><span id="pin-dialog-h">New pin</span><button id="pin-close" title="Close without saving (Esc)" aria-label="Close"><i class="ic i-x"></i></button></div>
     <div class="mono" id="pin-where"></div>
+    <div id="pin-was" class="was" hidden></div>
     <div class="lab">Issue <span class="muted">one click saves the pin</span></div>
     <div id="pin-chips" role="group" aria-label="Issue class"></div>
     <p id="pin-meaning" class="hint"></p>
-    <label for="pin-note">Note <span class="muted">optional</span></label>
-    <textarea id="pin-note" rows="2" placeholder="Optional"></textarea>
-    <div class="row2">
+    <div class="row2 notehead"><label for="pin-note">Note <span class="muted">optional</span></label><span class="grow"></span>
       <label for="pin-severity">Severity</label><select id="pin-severity"><option value="low">low</option><option value="medium" selected>medium</option><option value="high">high</option></select>
     </div>
+    <textarea id="pin-note" rows="2" placeholder="Optional"></textarea>
     <label id="pin-measure-row" hidden><input type="checkbox" id="pin-measure" checked> Attach the last measurement</label>
     <div class="row2 end"><button id="pin-cancel">Cancel</button><button id="pin-save" class="primary"><i class="ic i-check"></i>Save pin</button></div>
 </div></main>
 <aside id="panel" hidden>
   <div id="tabs" role="tablist">
     <button role="tab" data-tab="pins" class="on"><i class="ic i-map-pin"></i>Pins <span class="badge" id="pins-count">0</span></button>
-    <button role="tab" data-tab="diff"><i class="ic i-git-compare"></i>Diff <span class="badge" id="diff-count"></span></button>
+    <button role="tab" data-tab="diff"><i class="ic i-git-compare"></i>Revisions <span class="badge" id="diff-count"></span></button>
     <button role="tab" data-tab="tour"><i class="ic i-route"></i>Tour <span class="badge" id="tour-count"></span></button>
     <button role="tab" data-tab="issues"><i class="ic i-alert-triangle"></i>Issues</button>
   </div>
   <section class="tabpane" id="tab-pins">
     <div class="paneh">Pins <span class="muted" id="pins-sub"></span></div>
     <ol id="pin-list"></ol>
-    <div class="paneh">Measurements</div>
+    <div class="paneh meash"><span>Measurements <span class="badge" id="meas-count"></span></span><span class="grow"></span>
+      <label title="Show unattached measurements outside Measure mode too (on by default in Measure mode)"><input type="checkbox" id="meas-keep"> Keep visible</label>
+      <button id="meas-clear" title="Remove every measurement not attached to a pin (one undo step); attached ones stay with their pins"><i class="ic i-trash"></i><span>Clear all</span></button></div>
     <ol id="measure-list"></ol>
-    <p class="hint" id="pins-hint">Pin mode: click a part. Region mode: drag a box. Measure mode: click two points.</p>
+    <p class="hint" id="pins-hint">Pin mode: click a part. Region mode: drag a box. Measure mode: click two edges, vertices or faces; Delete removes the one under the pointer.</p>
   </section>
   <section class="tabpane" id="tab-diff" hidden>
+    <div class="paneh">Revisions <span class="muted">newest first; click one to see its old geometry</span></div>
+    <ol id="rev-list" tabindex="0" role="listbox" aria-label="Revisions, newest first (arrow keys step back in time)"></ol>
+    <div class="row2 rev-tools"><label title="Draw every part of the old revision, not only the ones that differ"><input type="checkbox" id="rev-whole"> Whole old model</label>
+      <span class="grow"></span><button id="rev-flick" title="Hold to show the old revision solid in place of the current model (or hold the \ key)"><i class="ic i-eye"></i>Show old</button><kbd title="Hold to flick between old and new">\</kbd></div>
+    <div id="diff-out"></div>
     <div class="paneh">Scope lock</div>
     <p class="hint" id="scope-sum">No parts marked. Scope mode: click the parts the next edit may change; everything else is locked.</p>
     <ul id="scope-list"></ul>
     <div class="row2"><button id="scope-clear">Clear scope</button></div>
-    <div class="paneh">Compare</div>
-    <div class="row2 compare"><select id="baseline" aria-label="Baseline to compare against"></select><button id="diff-run" class="primary"><i class="ic i-git-compare"></i>Compare</button></div>
-    <div class="row2"><label><input type="checkbox" id="diff-tint" checked> Tint changes</label><label><input type="checkbox" id="diff-ghost"> Ghost baseline</label><label><input type="checkbox" id="diff-all"> Unchanged too</label></div>
-    <div id="diff-out"><p class="hint">Compare the current build with the previous build or another version. Changed parts are tinted; changes outside the scope lock are COLLATERAL.</p></div>
+    <button id="rev-more-btn" class="morebtn" aria-expanded="false" aria-controls="rev-more"><i class="ic i-chevron-right"></i>More</button>
+    <div id="rev-more" hidden>
+      <div class="row2"><label><input type="checkbox" id="diff-tint"> Tint changes</label><label><input type="checkbox" id="diff-ghost"> Ghost baseline</label><label><input type="checkbox" id="diff-all"> Unchanged too</label></div>
+      <div class="row2"><span class="muted" id="rev-size"></span><span class="grow"></span><button id="rev-clear" title="Remove the kept earlier builds; the reviewed ones and the current build stay"><i class="ic i-trash"></i>Clear old revisions</button></div>
+    </div>
   </section>
   <section class="tabpane" id="tab-tour" hidden>
     <div id="tour-out"><p class="hint">No tour for this build. An agent writes one with <code>aad review tour-template</code> and saves it as .cadreview/tour.json.</p></div>
@@ -121,27 +144,41 @@
 </aside>
 <div id="component-menu" role="menu" aria-label="Component actions" hidden>
   <div id="component-menu-name"></div>
-  <button id="isolate-component" role="menuitem">Isolate component</button>
-  <button id="hide-component" role="menuitem">Hide</button>
-  <button id="solo-group" role="menuitem">Solo group</button>
-  <button id="showall-component" role="menuitem">Show all</button>
-  <button id="fit-component" role="menuitem">Fit to part</button>
+  <button id="select-component" role="menuitem"><i class="ic i-pointer"></i><span>Select</span></button>
+  <button id="pin-component" role="menuitem" hidden><i class="ic i-map-pin"></i><span>Pin</span></button>
   <div class="msep"></div>
-  <button id="pin-component" role="menuitem" hidden>Pin this part</button>
-  <button id="followup-component" role="menuitem" hidden>Add follow-up pin</button>
-  <button id="measure-component" role="menuitem" hidden>Measure from here</button>
-  <button id="scope-component" role="menuitem" hidden>Add to scope lock</button>
-  <button id="copy-component" role="menuitem">Copy part name</button>
+  <button id="isolate-component" role="menuitem"><i class="ic i-focus"></i><span>Isolate component</span></button>
+  <button id="hide-component" role="menuitem"><i class="ic i-eye-off"></i><span>Hide</span></button>
+  <button id="solo-group" role="menuitem"><i class="ic i-stack-2"></i><span>Solo group</span></button>
+  <button id="showall-component" role="menuitem"><i class="ic i-eye"></i><span>Show all</span></button>
+  <button id="fit-component" role="menuitem"><i class="ic i-focus-centered"></i><span>Fit to part</span></button>
+  <button id="info-component" role="menuitem"><i class="ic i-info-circle"></i><span>Part info</span></button>
+  <div class="msep"></div>
+  <button id="followup-component" role="menuitem" hidden><i class="ic i-corner-down-right"></i><span>Add follow-up pin</span></button>
+  <button id="measure-component" role="menuitem" hidden><i class="ic i-ruler-measure"></i><span>Measure from here</span></button>
+  <button id="scope-component" role="menuitem" hidden><i class="ic i-lock"></i><span>Add to scope lock</span></button>
+  <button id="copy-component" role="menuitem"><i class="ic i-clipboard-copy"></i><span>Copy part name</span></button>
 </div>
 <div id="options-pop" role="dialog" aria-label="Viewer options" hidden>
   <div class="oh">Navigation</div>
   <label><input type="radio" name="nav" value="fusion"> Fusion <span class="muted">middle pans, Shift+middle orbits, wheel zooms</span></label>
   <label><input type="radio" name="nav" value="classic"> Classic <span class="muted">left orbits, right pans, wheel zooms</span></label>
+  <div class="oh">Orbit</div>
+  <label><input type="radio" name="orbit" value="free"> Free <span class="muted">turns past the top and bottom, no fixed up</span></label>
+  <label><input type="radio" name="orbit" value="constrained"> Constrained <span class="muted">turntable, Z stays up</span></label>
+  <div class="oh">Orbit pivot</div>
+  <label><input type="radio" name="pivot" value="view"> View centre <span class="muted">visible parts, or the selection</span></label>
+  <label><input type="radio" name="pivot" value="selection"> Selection <span class="muted">its centre, else the view target</span></label>
+  <label><input type="radio" name="pivot" value="cursor"> Cursor point <span class="muted">the part under the cursor</span></label>
   <div class="oh">Background</div>
   <div id="bg-presets" class="row2"><button data-bg="light" title="Light grey (default)"><span class="sw" style="background:#e5e7eb"></span>Light grey</button><button data-bg="white"><span class="sw" style="background:#ffffff"></span>White</button><button data-bg="dark"><span class="sw" style="background:#2d333b"></span>Dark</button><button data-bg="black"><span class="sw" style="background:#000000"></span>Black</button>
     <label title="Any colour">Custom <input type="color" id="bg-custom" value="#e5e7eb"></label></div>
   <div class="oh">Display</div>
   <label><input type="checkbox" id="opt-edges"> Feature edges</label>
+</div>
+<div id="part-info" role="dialog" aria-modal="false" aria-labelledby="part-info-h" hidden>
+  <div class="dlgh"><i class="ic i-info-circle"></i><span id="part-info-h">Part info</span><button id="part-info-copy" title="Copy these lines"><i class="ic i-clipboard-copy"></i><span>Copy</span></button><button id="part-info-close" title="Close (Esc)" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <dl id="part-info-body"></dl>
 </div>
 <div id="toast" role="status" hidden></div>
 <footer id="bottom"><span id="selname">Click to select. Right-click to isolate. Double-click to focus. Esc clears. Cmd/Ctrl+Z undoes.</span><span id="selpath"></span><span id="pickinfo"></span><span id="navhint"></span></footer>

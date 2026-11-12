@@ -9,11 +9,15 @@
   GET  /review/diff.json?against=ID  diff of the current build against a baseline (build-... or a version id,
                                      "reviewed", "previous"; default: since your last packet when a packet was
                                      sent, else the previous build), saved as .cadreview/diff.json; resolved pins
-                                     whose part changed since the build they were resolved on reopen
+                                     whose part changed since the build they were resolved on reopen; `keep`
+                                     lists the keep pins whose 5 mm neighbourhood changed (local locks)
   GET  /review/pin-changes.json      for each open pin of the last packet: did its part change, and did anything
                                      within 5 mm of its point change, since the build the packet was sent against
                                      (empty when the current build is still that build)
-  GET  /review/baseline/ID/models/N  model file N of a baseline (the page ghosts it)
+  GET  /review/baseline/ID/models/N  model file N of a baseline (the page draws it as the revision hologram)
+  GET  /review/revisions.json        the Revisions list: for each diff choice how many parts differ from the
+                                     current build (cached per build pair), stored size, how many builds are kept
+  POST /review/revisions/clear       remove the kept earlier builds except the reviewed ones and the current one
   POST /review/packet                {packet fields..., "png": data URL} -> .cadreview/packets/<ts>/; the build
                                      it was sent against becomes the pinned "reviewed" baseline
 The current build's files are copied to .cadreview/baselines/ when the viewer starts and whenever a new complete
@@ -26,8 +30,9 @@ import urllib.parse
 
 from ..review import diff as D
 from ..review import packet as P
+from ..review.keep import keep_changes
 from ..review.schema import SchemaError
-from ..review.store import Store, build_id, find_project, hhmm, issue_classes, reviewed_label
+from ..review.store import Store, build_id, find_project, hhmm, issue_classes, issue_groups, reviewed_label
 
 def _issue_classes():
     return issue_classes()
@@ -42,6 +47,7 @@ class ReviewAPI:
         self.seen = None                       # signature of the last build snapshotted
         self.build = None
         self._diff_lock = threading.Lock()
+        self._differ = {}                       # (choice id, current build) -> parts that differ
 
     # ---- builds ----
     def model_files(self):
@@ -107,7 +113,8 @@ class ReviewAPI:
             if rv and b["id"] == rv["id"]:
                 continue                       # listed first as "since your last packet"
             out.append(dict(id=b["id"], kind="build", label=f"{what} ({hhmm(b['created'])}, build {b.get('build')})",
-                            created=b["created"], build=b.get("build"), files=len(b["paths"])))
+                            created=b["created"], build=b.get("build"), files=len(b["paths"]),
+                            size=sum(os.path.getsize(p) for p in b["paths"] if os.path.exists(p))))
         for v in self.V.version_options:
             vv = (self.V.version_viewers or {}).get(v["id"])
             if v["id"] != self.V.version_id and vv is not None:
@@ -157,7 +164,7 @@ class ReviewAPI:
         latest = st.latest_diff()
         return dict(enabled=True, project=st.project, review_dir=st.root, build=cur,
                     pins=st.pins_doc(), scope=st.scope(), tour=tour, tour_for=tour_for,
-                    issue_classes=_issue_classes(), issues=st.issue_counts(), baselines=self.baselines(),
+                    issue_classes=_issue_classes(), issue_groups=issue_groups(), issues=st.issue_counts(), baselines=self.baselines(),
                     diff=D.summary(latest) if latest and latest["b"].get("build") == cur else None,
                     packets=st.packets()[:5])
 
@@ -174,8 +181,34 @@ class ReviewAPI:
                          a_id=bid, b_id=self.V.version_id, a_build=abuild, b_build=cur, a_kind=kind, a_packet=packet)
             self.store.save_diff(doc)
             reopened = self.store.reopen_changed(doc, cur, diff_for=self._diff_against_build)
-        doc = dict(doc, reopened=[p["id"] for p in reopened])
+            keep = keep_changes(paths, self.model_files(), self.store.pins())
+        doc = dict(doc, reopened=[p["id"] for p in reopened], keep=keep)
         return 200, doc
+
+    def revisions(self):
+        """Rows of the Revisions tab: every diff choice with the number of parts that differ from the current
+        build (changed, moved, added or removed; geometry only, no detectors, nothing saved), the bytes stored
+        and the retention setting."""
+        from ..review.store import keep_builds
+        cur = self.current_build()
+        rows = []
+        for ch in self.baselines():
+            key = (ch["id"], ch.get("build"), cur)
+            n, parts = self._differ.get(key, (None, None))
+            if n is None:
+                paths = self._baseline_paths(ch["id"])[0]
+                if paths:
+                    try:
+                        with self._diff_lock:
+                            d = D.diff(paths, self.model_files(), detect=False)
+                        s = d["summary"]
+                        n = s["changed"] + s["moved"] + s["added"] + s["removed"]
+                        parts = [r["name"] for r in d["parts"] if r["status"] in ("changed", "moved", "removed")]
+                        self._differ[key] = (n, parts)
+                    except Exception as e:  # noqa: BLE001  (one unreadable revision must not hide the rest)
+                        print(f"review: revision {ch['id']}: {e}", flush=True)
+            rows.append(dict(ch, differ=n, parts=parts))     # parts: the old shapes the hologram draws by default
+        return 200, dict(build=cur, rows=rows, size_bytes=self.store.revisions_size(), keep=keep_builds())
 
     def pin_changes(self):
         """Open pins that were in the last packet, against the reviewed build (see diff.pin_changes)."""
@@ -199,6 +232,8 @@ class ReviewAPI:
             return 200, self.state()
         if path == "/review/pin-changes.json":
             return self.pin_changes()
+        if path == "/review/revisions.json":
+            return self.revisions()
         if path == "/review/diff.json":
             q = urllib.parse.parse_qs(query)
             return self.diff((q.get("against") or ["default"])[0])
@@ -223,6 +258,9 @@ class ReviewAPI:
                 return 200, st.set_scope(body.get("parts") or [], body.get("note"))
             if path == "/review/tour-decisions":
                 return 200, st.set_tour_decisions(body.get("decisions") or {})
+            if path == "/review/revisions/clear":
+                gone = st.clear_old(self.current_build())
+                return 200, dict(removed=gone, baselines=self.baselines(), size_bytes=st.revisions_size())
             if path == "/review/camera":
                 st.set_camera(dict(camera=body.get("camera"), selection=body.get("selection")))
                 return 200, dict(ok=True)

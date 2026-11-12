@@ -27,6 +27,10 @@ body.no-panel{grid-template-columns:320px minmax(0,1fr);grid-template-areas:"top
 .i-alert-octagon{--ic:url(vendor/tabler-icons/alert-octagon.svg)}
 .i-corner-down-right{--ic:url(vendor/tabler-icons/corner-down-right.svg)}
 .i-chevron-down{--ic:url(vendor/tabler-icons/chevron-down.svg)}
+.i-rotate{--ic:url(vendor/tabler-icons/rotate.svg)}.i-rotate-clockwise{--ic:url(vendor/tabler-icons/rotate-clockwise.svg)}
+.i-caret-up{--ic:url(vendor/tabler-icons/caret-up-filled.svg)}.i-caret-down{--ic:url(vendor/tabler-icons/caret-down-filled.svg)}
+.i-caret-left{--ic:url(vendor/tabler-icons/caret-left-filled.svg)}.i-caret-right{--ic:url(vendor/tabler-icons/caret-right-filled.svg)}
+.i-focus{--ic:url(vendor/tabler-icons/focus.svg)}.i-clipboard-copy{--ic:url(vendor/tabler-icons/clipboard-copy.svg)}.i-stack-2{--ic:url(vendor/tabler-icons/stack-2.svg)}
 .i-map-pin-off{--ic:url(vendor/tabler-icons/map-pin-off.svg)}.i-player-play{--ic:url(vendor/tabler-icons/player-play.svg)}
 
 /* the toolbar is one row: below 1700 px Undo and Redo, below 1500 px the view tools (Ortho keeps its label) and
@@ -109,7 +113,7 @@ input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--acc);fle
 #panel[hidden]{display:none}
 #tabs{display:flex;gap:2px;padding:6px 6px 0;border-bottom:1px solid var(--line);min-width:0}
 #tabs button{border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;background:none;padding:7px 9px;font-size:14px;flex:0 1 auto;min-width:0;white-space:nowrap}
-@container (max-width:360px){#tabs .ic{display:none}#tabs button{padding:7px 8px}#baseline{font-size:13px;padding:6px 4px}}
+@container (max-width:360px){#tabs .ic{display:none}#tabs button{padding:7px 8px}}
 #tabs button.on{background:var(--panel2);border-color:var(--line);color:var(--fg)}
 .badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:#30363d;font-size:12px;text-align:center}
 .badge:empty{display:none}
@@ -165,7 +169,6 @@ button.danger{color:#ffa198;border-color:#8e1519}button.danger:hover{background:
 .bar .bf{height:100%;background:#bc4c00}
 .bar .bn{width:56px;text-align:right;font-variant-numeric:tabular-nums;font-size:14px}
 select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px;font:inherit;font-size:14px}
-#baseline{flex:1 1 100%;min-width:0;width:100%}
 .row2.compare{justify-content:flex-end}
 .row2{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0}
 .row2.end{justify-content:flex-end}
@@ -187,7 +190,9 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 #component-menu[hidden],#component-menu button[hidden]{display:none}
 #component-menu-name{padding:5px 8px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--muted)}
 #component-menu .msep{height:1px;background:var(--line);margin:4px 2px}
-#component-menu button{display:block;width:100%;text-align:left;padding:7px 8px;border:0;background:none;border-radius:6px}
+#component-menu button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:7px 8px;border:0;background:none;border-radius:6px}
+#component-menu button .ic{width:17px;height:17px;flex:none}
+#component-menu button span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #component-menu button:hover{background:var(--btnh)}
 #component-menu button:focus-visible{outline:2px solid #79b8ff;outline-offset:-2px;background:var(--btnh)}
 /* the pin editor is a floating card in the workspace: no backdrop, the canvas around it keeps every input */
@@ -234,3 +239,99 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 @media (max-width:1359px){#modes button span{display:none}}
 @media (max-width:900px){body,body.no-panel{grid-template-columns:1fr;grid-template-rows:auto auto 45vh auto auto auto;grid-template-areas:"top" "viewbar" "view" "panel" "side" "bottom";overflow:auto;height:auto}
   html,body{overflow:auto}#top{flex-wrap:wrap}#top .tools button span{display:none}}
+
+/* orbit pivot marker (only while an orbit runs) */
+#pivot-marker{width:14px;height:14px;margin:0;border-radius:50%;border:2px solid #ffffff;box-shadow:0 0 0 2px #1f6febcc,0 0 0 4px #0d111799;background:#1f6feb66;pointer-events:none}
+
+/* view cube controls over the cube's own box (top-right, 116 px): Home and the two roll arrows along the top
+   corners, a triangle on each side to step to the adjacent face; shown while the pointer is near the cube */
+#cube-nav{position:absolute;top:6px;right:6px;width:116px;height:116px;z-index:6;pointer-events:none;opacity:0;transition:opacity .15s}
+#cube-nav.show,#cube-nav:focus-within{opacity:1}
+#cube-nav button{position:absolute;pointer-events:auto;width:22px;height:22px;padding:0;justify-content:center;border-radius:5px;
+  background:#161b22d9;border:1px solid #64748b;color:#e6edf3}
+#cube-nav button:hover{background:var(--acc);border-color:var(--acc);color:#fff}
+#cube-nav .ic{width:15px;height:15px}
+#cube-nav .tri{width:18px;height:18px;border-radius:4px}#cube-nav .tri .ic{width:14px;height:14px}
+#cube-home{left:0;top:0}#cube-roll-ccw{right:24px;top:0}#cube-roll-cw{right:0;top:0}
+#cube-up{left:49px;top:0}#cube-down{left:49px;bottom:0}#cube-left{left:0;top:49px}#cube-right{right:0;top:49px}
+
+/* Revisions tab: one list, newest first; the selected row draws that revision as a green hologram */
+#rev-list{list-style:none;margin:4px 0 8px;padding:0;display:flex;flex-direction:column;gap:4px;outline:none}
+#rev-list:focus-visible{outline:2px solid var(--acc2);outline-offset:2px;border-radius:8px}
+#rev-list li{border:1px solid var(--line);border-radius:8px;padding:7px 10px;cursor:pointer;background:var(--panel2)}
+#rev-list li:hover{background:var(--btnh)}
+#rev-list li.now{cursor:default;background:var(--panel);border-style:dashed}
+#rev-list li.pre{border-color:#3fb950}
+#rev-list li.sel{border-color:#3fb950;background:#0f2a17;box-shadow:inset 3px 0 0 #3fb950}
+#rev-list li.peek{border-color:#7ee787}
+#rev-list .r1{display:flex;gap:8px;align-items:baseline;min-width:0}
+#rev-list .t{font-variant-numeric:tabular-nums;font-weight:700;flex:none}
+#rev-list .lab{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#rev-list .sub{font-size:13px;color:var(--muted);margin-top:2px}
+#rev-list li.loading .sub::after{content:"  loading...";color:#7ee787}
+.rev-tools kbd{border:1px solid #64748b;border-radius:4px;padding:1px 6px;font:13px ui-monospace,monospace;color:var(--fg)}
+#rev-flick.on{background:#238636;border-color:#2ea043;color:#fff}
+.morebtn{margin-top:8px}.morebtn[aria-expanded=true] .ic{transform:rotate(90deg)}
+
+/* class groups (pin_groups.js): Change request violet, Problem orange, Note to the agent teal; each distinct from
+   resolved green and not-fixed red, white ring for dark viewports */
+.i-map-pin-exclamation{--ic:url(vendor/tabler-icons/map-pin-exclamation.svg)}
+.pin-marker.g-change_request{background:#7c3aed}.pin-marker.g-problem,.pin-marker.g-other{background:#b35900}.pin-marker.g-note{background:#0e7490}
+.pin-marker.orphan{background:#57606a}
+.pin-marker.repinned{box-shadow:0 0 0 3px #f85149,0 2px 6px #0007}
+#edge-lines .g-change_request{stroke:#7c3aed}#edge-lines .g-note{stroke:#0e7490}#edge-lines .g-problem,#edge-lines .g-other{stroke:#b35900}
+#pin-chips{display:flex;flex-direction:column;flex-wrap:nowrap;gap:5px}
+#pin-chips .cgroup{display:flex;flex-wrap:wrap;align-items:center;gap:3px 4px;padding-left:7px;border-left:3px solid #b35900}
+#pin-chips .cgroup.g-change_request{border-left-color:#7c3aed}#pin-chips .cgroup.g-note{border-left-color:#0e7490}#pin-chips .cgroup.g-other{border-left-color:#6e7681}
+#pin-chips .cgl{font-size:12px;font-weight:700;color:var(--fg);margin-right:2px;white-space:nowrap}
+#pin-chips .cgc{display:contents}
+#pin-chips .cgc button{padding:1px 7px;font-size:12px;line-height:1.35;border-radius:11px}
+#pin-chips .cgroup.g-change_request button.on{background:#7c3aed;border-color:#a371f7;color:#fff}
+#pin-chips .cgroup.g-problem button.on,#pin-chips .cgroup.g-other button.on{background:#b35900;border-color:#f0883e;color:#fff}
+#pin-chips .cgroup.g-note button.on{background:#0e7490;border-color:#39c5cf;color:#fff}
+.chip.grp{font-weight:600;color:#fff}.chip.grp.g-change_request{background:#7c3aed}.chip.grp.g-problem,.chip.grp.g-other{background:#b35900}.chip.grp.g-note{background:#0e7490}
+.chip.repinned{background:var(--bad);color:#fff}
+.was{font-size:13px;color:#ffa198;word-break:break-word}
+.item .was{margin-top:4px}
+#pin-was{margin:0}
+.pin-old{width:12px;height:12px;border-radius:50%;border:2.5px solid #f85149;background:transparent;box-shadow:0 0 0 1.5px #fff;pointer-events:none}
+.banner.keep .ic{width:16px;height:16px;vertical-align:-3px;margin-right:4px;color:#ffa198}
+#issues-out .igroup{margin:0 0 10px}
+#issues-out .igh{display:flex;justify-content:space-between;font-weight:700;font-size:14px;margin:4px 0;padding-left:8px;border-left:3px solid #b35900}
+#issues-out .igroup.g-change_request .igh{border-left-color:#7c3aed}#issues-out .igroup.g-note .igh{border-left-color:#0e7490}#issues-out .igroup.g-other .igh{border-left-color:#6e7681}
+#pin-dialog .notehead{margin-top:2px}#pin-dialog .notehead select{padding:2px 6px}
+#pin-dialog{max-height:calc(100% - 16px);overflow-y:auto}
+.item .num.g-change_request{background:#7c3aed}.item .num.g-problem,.item .num.g-other{background:#b35900}.item .num.g-note{background:#0e7490}.item .num.resolved{background:#1a7f37}
+
+/* ---- weight estimate (left panel, under Section and Explode) and the Part info card (weight.js) ---- */
+.i-weight{--ic:url(vendor/tabler-icons/weight.svg)}.i-info-circle{--ic:url(vendor/tabler-icons/info-circle.svg)}
+#side>.row,#side>.ctl,#side>#versionbox{flex:none}
+#tree{min-height:60px}
+#weightbox .h{display:flex;align-items:center;gap:6px}
+#weightbox .h .ic{width:16px;height:16px}
+#weight-material{width:100%;margin:2px 0 4px}
+#weightbox .wprint{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:13px;margin:4px 0;white-space:nowrap}
+#weightbox .wprint.off{opacity:.5}
+#weightbox input[type=number]{width:44px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:2px 4px;font:13px ui-monospace,Menlo,monospace}
+#weight-out{margin-top:4px;font-size:14px;line-height:1.4;font-variant-numeric:tabular-nums}
+#weight-out .wname{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#weight-out .wbad{color:#ffa198}
+#part-info{position:fixed;z-index:22;width:340px;max-width:calc(100vw - 16px);background:var(--panel);border:1px solid #64748b;border-radius:10px;padding:10px 12px;box-shadow:0 8px 28px #0008}
+#part-info[hidden]{display:none}
+#part-info .dlgh{display:flex;align-items:center;gap:8px;font-size:15px;margin-bottom:6px}
+#part-info .dlgh span#part-info-h{flex:1}
+#part-info .dlgh button{padding:3px 7px;font-size:13px;font-weight:400}
+#part-info-close{background:none;border-color:transparent}
+#part-info-body{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:0;font-size:14px}
+#part-info-body dt{font-weight:600;color:var(--muted)}
+#part-info-body dd{margin:0;font:13px/1.45 ui-monospace,Menlo,monospace;word-break:break-word}
+/* ---- measurements (measure.js): labels sit beside their line, offset in screen space ---- */
+.measure-anchor{width:0;height:0;overflow:visible;position:relative}
+.measure-anchor>.measure-label{position:absolute;left:0;top:0;translate:-50% -50%}
+.measure-dot.hover{background:#1f6feb;border-color:#fff;width:12px;height:12px;border-radius:6px}
+.measure-dot.draft{outline:2px solid #1f6feb}
+.paneh.meash{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.paneh.meash label{display:flex;align-items:center;gap:5px;font-weight:400;font-size:13px}
+.paneh.meash button{padding:3px 8px;font-size:13px;font-weight:400}
+.paneh.meash .ic{width:16px;height:16px}
+.item.meas .mkind{font-size:13px}

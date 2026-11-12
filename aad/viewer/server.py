@@ -18,6 +18,8 @@ style.css next to this module. Routes:
   POST /log, /log.json page errors (echoed on stderr)
   POST /pose, GET /pose, GET /pose-info   pose of the movable group (--movable NAME, --save-to pose.json),
                        every save also appended to pose_history.jsonl next to the pose file
+  GET /part-stats.json per-part volume (mm3), area (mm2), world box, triangle count and closed-shell flag of the
+                       served GLB/STL files (the review diff's numbers), for the weight estimate and Part info
   /review/...          pins, scope lock, diff, tour and packets (review_api.py; state in <project>/.cadreview/)
   /vendor/...          the vendored page libraries (three, camera-controls, three-viewport-gizmo, three-mesh-bvh,
                        Tabler icons; versions and licences in vendor/LICENSES.txt); the page makes no network calls
@@ -44,6 +46,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
               ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8"}
 PAGE_FILES = {"index.html": PAGE_TYPES[".html"], "view.js": PAGE_TYPES[".js"], "review.js": PAGE_TYPES[".js"],
+              "repin.js": PAGE_TYPES[".js"], "pin_groups.js": PAGE_TYPES[".js"],
+              "measure.js": PAGE_TYPES[".js"], "weight.js": PAGE_TYPES[".js"],
               "style.css": PAGE_TYPES[".css"]}
 
 
@@ -511,6 +515,8 @@ def make_handler(V, versions=None):
                 if not fp or ext not in (".png", ".jpg", ".jpeg"):
                     return self._json(404, dict(error=f"no {path}"))
                 return self._file(dict(path=fp, ext=ext))
+            if path == "/part-stats.json":
+                return self._part_stats(V)
             if path == "/log.json":
                 return self._json(200, dict(entries=V.logs[-200:]))
             if path == "/pose-info":
@@ -533,6 +539,17 @@ def make_handler(V, versions=None):
                 with open(pf[0], "rb") as fh:
                     return self._send(200, fh.read(), pf[1])
             return self._json(404, dict(error=f"no {path}"))
+
+        def _part_stats(self, V):
+            # per-part volume, area, box and closedness for the weight estimate and Part info (the review diff's
+            # own numbers, aad.review.diff.part_table); STL and GLB files only
+            try:
+                from ..review.diff import part_table
+                files = [f["path"] for f in V.src.files() if f["ext"] in (".glb", ".stl")]
+                return self._json(200, part_table(files) if files else dict(parts=[], skipped=[]))
+            except Exception as e:  # noqa: BLE001  (an unreadable file must not break the page)
+                log(f"part-stats: {type(e).__name__}: {e}")
+                return self._json(500, dict(error=f"{type(e).__name__}: {e}"))
 
         def _body(self):
             n = int(self.headers.get("Content-Length", 0))
@@ -718,7 +735,7 @@ def check(paths, port=None, tree=None, views=None, movable=None, second=None, sa
             want = os.stat(f["path"]).st_size
             print(f"/models/{f['i']} {f['name']} {c} {len(body)} bytes (expected {want})")
             rc |= c != 200 or len(body) != want
-        for p in ("/tree.json", "/views.json", "/review.js", "/vendor/three/build/three.module.js",
+        for p in ("/tree.json", "/views.json", "/review.js", "/repin.js", "/pin_groups.js", "/vendor/three/build/three.module.js",
                   "/vendor/camera-controls/camera-controls.module.js"):
             c, body = get(p)
             print(f"{p} {c}")

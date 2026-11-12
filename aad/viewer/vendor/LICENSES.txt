@@ -31,6 +31,7 @@ three-mesh-bvh 0.9.18  licence MIT  https://github.com/gkjohnson/three-mesh-bvh
   sha256 bdfb3f6f69fd1a33a6c02e4ea3e24977c402335d9aba86d1b8f2853fafa7df1f  three-mesh-bvh/three-mesh-bvh.module.js
 
 @tabler/icons 3.35.0  licence MIT  https://github.com/tabler/tabler-icons
-  files: a subset of icons/outline/*.svg; unmodified
+  files: a subset of icons/outline/*.svg, plus icons/filled/caret-{up,down,left,right}.svg saved as caret-*-filled.svg; unmodified
   sha256 5a3b65e1ad6a081759fde376fe14e2cd88552a9ebea89a8168f34eab1e96109f  tabler-icons/LICENSE
-  icons: alert-octagon, alert-triangle, arrow-back-up, arrow-forward-up, arrows-diagonal-2, axis-x, box, camera, check, chevron-down, chevron-left, chevron-right, circle-check, circle-x, clipboard-copy, corner-down-right, crosshair, cube, cube-send, eye, eye-off, focus-2, focus-centered, ghost-2, git-compare, grid-dots, home, layers-subtract, list-tree, lock, lock-open, map-pin, map-pin-off, marquee-2, note, perspective, player-play, pointer, refresh, route, ruler-2, ruler-measure, send, settings, tags, trash, x
+  icons: alert-octagon, alert-triangle, arrow-back-up, arrow-forward-up, arrows-diagonal-2, axis-x, box, camera, check, chevron-down, chevron-left, chevron-right, circle-check, circle-x, clipboard-copy, corner-down-right, crosshair, cube, cube-send, eye, eye-off, focus, focus-2, focus-centered, ghost-2, git-compare, grid-dots, home, info-circle, layers-subtract, list-tree, lock, lock-open, map-pin, map-pin-exclamation, map-pin-off, marquee-2, note, perspective, player-play, pointer, refresh, rotate, rotate-clockwise, route, ruler-2, ruler-measure, send, settings, stack-2, tags, trash, weight, x
+  filled icons: caret-up, caret-down, caret-left, caret-right
