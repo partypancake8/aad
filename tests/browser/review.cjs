@@ -830,7 +830,7 @@ async function checkGroupedPinCard(X){
 }
 
 // A2: a keep pin is a local lock: after a packet, a build that changes geometry within 5 mm of it is flagged at the
-// top of the Diff tab like collateral and in aad review, even with its part inside the scope lock; no "Unchanged
+// top of the Revisions tab like collateral and in aad review, even with its part inside the scope lock; no "Unchanged
 // here since your packet" badge on keep or question pins
 async function checkKeepPinIsALock(X){
   const {page,A}=X;
@@ -858,9 +858,9 @@ async function checkKeepPinIsALock(X){
   await page.waitForFunction(b=>{const r=viewer.review.state();return r.build===b&&r.diff&&r.diff.b===b;},B3,{timeout:120000});
   await page.waitForTimeout(800);
   const first=await page.locator('#diff-out > *').first();
-  assert.equal(await first.getAttribute('id'),'keep-banner','the keep flag is the first thing in the Diff tab');
+  assert.equal(await first.getAttribute('id'),'keep-banner','the keep flag is the first thing in the Revisions tab');
   assert.match(await first.textContent(),new RegExp(`KEEP: 1 spot you locked changed.*#${X.keep.n} on ${A.node}: geometry within 5 mm changed`));
-  assert.equal(await page.locator('#diff-count').evaluate(e=>e.classList.contains('bad')),true,'the Diff tab count turns red');
+  assert.equal(await page.locator('#diff-count').evaluate(e=>e.classList.contains('bad')),true,'the Revisions tab count turns red');
   const dd=await page.evaluate(async()=>(await fetch(new URL('review/diff.json',location.href))).json());
   assert.deepEqual(dd.keep.map(k=>k.id),[X.keep.id],'the server diff lists the keep pin');assert.equal(dd.a.kind,'reviewed');
   const rj=JSON.parse(review('--json'));assert.deepEqual(rj.keep_changed.map(k=>k.id),[X.keep.id],'aad review --json keep_changed');
@@ -877,7 +877,7 @@ async function checkKeepPinIsALock(X){
   assert(changedIds.length>=1,'some pin of the packet has its part changed');
   for(const id of changedIds)if(await X.pinLi(id).count())assert.equal(await X.pinLi(id).locator('[data-act=repin]').count(),1,`Repin on ${id}, whose part changed since the packet`);
   fs.rmSync(tmp,{recursive:true,force:true});
-  X.ok(`keep pin ${X.keep.id}: build ${B3} changed geometry within 5 mm, flagged first in the Diff tab and in aad review; Repin on ${changedIds.length} changed pin(s)`);
+  X.ok(`keep pin ${X.keep.id}: build ${B3} changed geometry within 5 mm, flagged first in the Revisions tab and in aad review; Repin on ${changedIds.length} changed pin(s)`);
 }
 
 // marker colours: change request, problem and note pins each have their own colour, distinct from resolved green and
@@ -1251,4 +1251,24 @@ async function checkPolish(X){
  if(X.shots)await page.locator('#panel').screenshot({path:path.join(X.shots,'tour-long-title-300px.png')});
  await page.evaluate(()=>document.body.style.removeProperty('--panel-w'));await page.waitForTimeout(200);
  ok('long tour title and stop notes wrap inside the panel at the default width and at 300 px');
+ // 6: "Diff tab" is gone from the page; a pin dropped just left of and below the view cube opens its card clear of the cube
+ assert.equal(await page.evaluate(()=>/Diff tab/i.test(document.body.innerText+document.documentElement.innerHTML)),false,'no "Diff tab" left in the page');
+ await page.locator('#tabs [data-tab=pins]').click();
+ const p0=await pointOn(page,X.A.key);assert(p0,'part A on screen');
+ const cv=await page.locator('#c').boundingBox(),cube0=await page.evaluate(()=>{const r=document.getElementById('viewcube').getBoundingClientRect();return {l:r.left,t:r.top,r:r.right,b:r.bottom};});
+ const tgt={x:cube0.l-40,y:cube0.b+30};
+ await page.mouse.move(p0.x,p0.y);await page.mouse.down({button:'middle'});await page.mouse.move(tgt.x,tgt.y,{steps:12});await page.mouse.up({button:'middle'});await page.waitForTimeout(500);
+ const near=await page.evaluate(([k,t])=>{let best=null;for(let y=t.y-60;y<t.y+60;y+=4)for(let x=t.x-60;x<t.x+60;x+=4){const i=viewer.pickAt(x,y);
+   if(i&&i.part.key===k&&!viewer.edgeAt(x,y)){const d=Math.hypot(x-t.x,y-t.y);if(!best||d<best.d)best={x,y,d};}}return best;},[X.A.key,tgt]);
+ assert(near,'part A under the pointer beside the view cube after the pan');
+ await page.locator('#modes [data-mode=pin]').click();await page.mouse.click(near.x,near.y);await page.locator('#pin-dialog').waitFor({state:'visible'});await page.waitForTimeout(300);
+ const cardBox=await page.evaluate(()=>{const r=document.getElementById('pin-dialog').getBoundingClientRect(),v=document.getElementById('view').getBoundingClientRect();
+   return {l:r.left,t:r.top,r:r.right,b:r.bottom,inside:r.left>=v.left&&r.right<=v.right&&r.top>=v.top&&r.bottom<=v.bottom};});
+ const cubeHit=!(cardBox.l>cube0.r||cardBox.r<cube0.l||cardBox.t>cube0.b||cardBox.b<cube0.t);
+ if(X.shots)await page.screenshot({path:path.join(X.shots,'pin-card-near-cube.png')});
+ assert(!cubeHit&&cardBox.inside,`the pin card (${JSON.stringify(cardBox)}) stays off the view cube (${JSON.stringify(cube0)}) and inside the view`);
+ await page.keyboard.press('Escape');await page.waitForTimeout(200);
+ if(await page.locator('#pin-dialog').isVisible())await page.locator('#pin-close').click();
+ await page.locator('#modes [data-mode=select]').click();
+ ok(`no "Diff tab" text; the pin card near the top-right flips clear of the view cube (pin at ${Math.round(near.x)},${Math.round(near.y)})`);
 }

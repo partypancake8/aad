@@ -168,7 +168,7 @@ export function initReview(V){
     draftMarker=new CSS2DObject(el);draftMarker.center.set(0.5,1.25);
     if(c.anchor.mesh){c.anchor.mesh.add(draftMarker);draftMarker.position.copy(c.anchor.local);}else{V.scene.add(draftMarker);draftMarker.position.copy(c.anchor.world);}
   }
-  const _w=new THREE.Vector3();
+  const _w=new THREE.Vector3();let cardCube=false;
   function placeCard(){
     if(card.hidden||!dialogCtx){overlay.classList.remove('leader');anchorPx=null;return;}
     const W=V.host.clientWidth,H=V.host.clientHeight,w=card.offsetWidth,h=card.offsetHeight,g=8;
@@ -176,15 +176,21 @@ export function initReview(V){
     if(p){p.project(V.cam);if(p.z>=-1&&p.z<=1){x=(p.x*0.5+0.5)*W;y=(0.5-p.y*0.5)*H;}}
     anchorPx=x==null?null:{x,y};
     const clamp=(l,t)=>({l:Math.max(g,Math.min(l,W-w-g)),t:Math.max(g,Math.min(t,H-h-g))});
+    // the view cube and its arrows (top-right) are never covered: a spot that would overlap them flips to the
+    // other side of the point
+    const hr=V.host.getBoundingClientRect(),cubeEl=document.getElementById('cube-nav')||document.getElementById('viewcube');
+    const cr=cubeEl?cubeEl.getBoundingClientRect():null,cb=cr&&cr.width?{l:cr.left-hr.left-g,t:cr.top-hr.top-g,r:cr.right-hr.left+g,b:cr.bottom-hr.top+g}:{l:W-130,t:0,r:W,b:130};
+    const over=(q,a)=>!(q.l>a.r||q.l+w<a.l||q.t>a.b||q.t+h<a.t),onCube=q=>over(q,cb);
     let pos;
-    if(x==null)pos=cardPos||clamp(W-w-g,g);
+    if(x==null)pos=cardPos||clamp(W-w-g,cb.b+g);
     else if(cardOffset)pos=clamp(x+cardOffset.dx,y+cardOffset.dy);
     else{
-      // keep clear of the marker bubble (it sits above the point) and the point itself
-      const av={l:x-24,t:y-44,r:x+24,b:y+10},hit=q=>!(q.l>av.r||q.l+w<av.l||q.t>av.b||q.t+h<av.t);
-      const cands=[clamp(x+44,y-h/2),clamp(x-44-w,y-h/2),clamp(x-w/2,y+26),clamp(x-w/2,y-56-h)];
-      pos=cands.find(q=>!hit(q))||cands[0];
+      // keep clear of the marker bubble (it sits above the point), the point itself and the view cube
+      const av={l:x-24,t:y-44,r:x+24,b:y+10},hit=q=>over(q,av);
+      const cands=[clamp(x+44,y-h/2),clamp(x-44-w,y-h/2),clamp(x-w/2,y+26),clamp(x-w/2,y-56-h),clamp(x-44-w,cb.b+g),clamp(x+44,cb.b+g)];
+      pos=cands.find(q=>!hit(q)&&!onCube(q))||cands.find(q=>!onCube(q))||cands[0];
     }
+    cardCube=onCube(pos);
     cardPos=pos;card.style.left=pos.l+'px';card.style.top=pos.t+'px';
     if(x==null){overlay.classList.remove('leader');return;}
     const cx=Math.max(pos.l,Math.min(x,pos.l+w)),cy=Math.max(pos.t,Math.min(y,pos.t+h));
@@ -513,7 +519,7 @@ export function initReview(V){
   }
   $('scope-clear').onclick=()=>{if(S.scope.length){S.scope=[];changed();}};
 
-  // ---- Revisions (the Diff tab): one list, newest first: the current build ("now"), then every earlier revision
+  // ---- Revisions (the Revisions tab): one list, newest first: the current build ("now"), then every earlier revision
   // the server keeps (the reviewed build, earlier builds, manifest versions), each with how many parts differ from
   // now. Clicking a row draws that revision over the current model as a green hologram (the differing parts, or the
   // whole old model) and lists what changed under it; clicking it again or Esc turns it off; hovering another row
@@ -903,7 +909,7 @@ export function initReview(V){
   function restore(r){if(!r)return;S.pins=clone(r.p);S.next=r.nx;S.scope=clone(r.sc);S.meas=clone(r.ms);S.decisions=clone(r.td);rerender();persist();}
 
   // After a rebuild the diff runs by itself against the default choice (since your last packet when one was sent)
-  // and the Diff tab opens. On a page load with a packet baseline the same compare runs, so a reload after a build
+  // and the Revisions tab opens. On a page load with a packet baseline the same compare runs, so a reload after a build
   // shows the reviewed version against the fixed one without a click.
   async function onModel(first){
     try{await loadState(first);}catch(e){console.warn('review state',e.message);return;}

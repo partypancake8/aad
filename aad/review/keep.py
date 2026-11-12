@@ -1,6 +1,6 @@
 """Keep pins are local locks: the reviewer pins a spot with the `keep` class ("This is right; do not change it"). When any
 geometry within NEAR_MM of a keep pin's point changes between the reviewed build and the current one, that is
-flagged like collateral (top of the viewer's Diff tab, `aad review`), even when the part is inside the scope lock.
+flagged like collateral (top of the viewer's Revisions tab, `aad review`), even when the part is inside the scope lock.
 A region keep pin (no point) is flagged when any of its parts changed."""
 from . import diff as D
 from .store import OPEN

@@ -1,7 +1,7 @@
 // pin_groups.js: the issue-class groups of the review workspace (Change request, Problem, Note to the agent, Other).
 // Every class in issue_classes.json names its group; the pin card shows its chips in labelled groups in that order,
 // markers and badges take the group's colour, the Issues tab counts by group then class, and keep pins (local
-// locks) are flagged at the top of the Diff tab when the geometry near them changed.
+// locks) are flagged at the top of the Revisions tab when the geometry near them changed.
 export const GROUPS_FALLBACK=[{id:'change_request',label:'Change request',badge:'Change'},{id:'problem',label:'Problem',badge:'Problem'},
   {id:'note',label:'Note to the agent',badge:'Note'},{id:'other',label:'Other',badge:'Other'}];
 // marker fills (white numbers, white ring): distinct from resolved green #1a7f37 and not-fixed red #f85149, at least
@@ -47,7 +47,7 @@ export function issuesHTML(classes,groups,tot,op){
   return h;
 }
 
-// top of the Diff tab: keep pins whose neighbourhood changed (the server's diff `keep` list), shown like collateral
+// top of the Revisions tab: keep pins whose neighbourhood changed (the server's diff `keep` list), shown like collateral
 export function keepBanner(diff){
   const k=diff?.keep||[];if(!k.length)return '';
   return `<div class="banner keep" id="keep-banner"><b><i class="ic i-lock"></i>KEEP: ${k.length} spot${k.length===1?'':'s'} you locked changed</b><ul>${
