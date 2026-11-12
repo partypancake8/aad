@@ -31,7 +31,7 @@ body.no-panel{grid-template-columns:var(--side-w,320px) minmax(0,1fr);grid-templ
 .i-caret-up{--ic:url(vendor/tabler-icons/caret-up-filled.svg)}.i-caret-down{--ic:url(vendor/tabler-icons/caret-down-filled.svg)}
 .i-caret-left{--ic:url(vendor/tabler-icons/caret-left-filled.svg)}.i-caret-right{--ic:url(vendor/tabler-icons/caret-right-filled.svg)}
 .i-focus{--ic:url(vendor/tabler-icons/focus.svg)}.i-clipboard-copy{--ic:url(vendor/tabler-icons/clipboard-copy.svg)}.i-stack-2{--ic:url(vendor/tabler-icons/stack-2.svg)}
-.i-map-pin-off{--ic:url(vendor/tabler-icons/map-pin-off.svg)}.i-player-play{--ic:url(vendor/tabler-icons/player-play.svg)}
+.i-map-pin-off{--ic:url(vendor/tabler-icons/map-pin-off.svg)}.i-scissors{--ic:url(vendor/tabler-icons/scissors.svg)}.i-player-play{--ic:url(vendor/tabler-icons/player-play.svg)}
 
 /* the toolbar is one row: below 1700 px Undo and Redo, below 1500 px the view tools (Ortho keeps its label),
    below 1360 px the mode buttons and below 1100 px Send packet show icons only (each keeps its tooltip); the model
@@ -100,6 +100,12 @@ input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--acc);fle
 #triad-label{color:#1f2937;position:absolute;left:8px;bottom:6px;font-size:12px;pointer-events:none}
 #modehint{position:absolute;left:50%;top:10px;transform:translateX(-50%);background:#0d1117e8;border:1px solid var(--acc2);color:var(--fg);border-radius:8px;padding:6px 12px;font-size:14px;pointer-events:none;z-index:5}
 #modehint[hidden],#rect[hidden]{display:none}
+#focus-chip{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;max-width:calc(100% - 24px);background:#0d1117f0;border:1px solid var(--warn);color:var(--fg);border-radius:8px;padding:6px 12px;font-size:14px;z-index:5;cursor:pointer;white-space:nowrap}
+#focus-chip[hidden]{display:none}
+#focus-chip>span:first-of-type{overflow:hidden;text-overflow:ellipsis;min-width:0}
+#focus-chip .lk{color:#79c0ff;font-weight:600;flex:none}
+#focus-chip:hover .lk,#focus-chip:focus-visible .lk{text-decoration:underline}
+#focus-chip .ic{color:var(--warn);width:16px;height:16px}
 /* large model: the parts still being prepared in the background (picking trees, edges) */
 #prep{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:#0d1117ee;border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:6px 12px;font-size:13px;pointer-events:none;z-index:5;white-space:nowrap;max-width:calc(100% - 32px)}
 #prep[hidden]{display:none}
@@ -202,6 +208,13 @@ button.danger{color:#ffa198;border-color:#8e1519}button.danger:hover{background:
 .banner{border:2px solid var(--bad);background:#3c0d0d;border-radius:8px;padding:8px 10px;margin:6px 0}
 .banner b{color:#ffa198}
 .banner.ok{border-color:var(--ok);background:#0f2a17}
+.banner.pinned{border-color:var(--warn);background:#2e2405}.banner.pinned b{color:#f8e3a1}.banner.pinned .muted{color:#f2cc60}
+.chip.pinnedout{background:#9e6a03;color:#fff}
+.chip.cutaway{display:inline-flex;align-items:center;gap:3px;background:#30363d;color:var(--fg);border:1px dashed #8b949e}.chip.cutaway[hidden]{display:none}.chip.cutaway .ic{width:12px;height:12px}
+.pin-marker .cutb{display:none}
+.pin-marker.cut{opacity:.45;border-style:dashed}
+.pin-marker.cut .cutb{display:block;position:absolute;right:-7px;top:-7px;width:14px;height:14px;padding:0;border-radius:7px;background:#e6edf3;-webkit-mask:none;mask:none}
+.pin-marker.cut .cutb::after{content:"";position:absolute;inset:2px;background:#0d1117;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
 .counts{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
 .bar{display:flex;align-items:center;gap:8px;margin:5px 0}
 .bar .bl{width:150px;flex:none;font-size:14px}
@@ -236,9 +249,30 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 #component-menu button:hover{background:var(--btnh)}
 #component-menu button:focus-visible{outline:2px solid #79b8ff;outline-offset:-2px;background:var(--btnh)}
 /* the pin editor is a floating card in the workspace: no backdrop, the canvas around it keeps every input */
-#pin-dialog{position:absolute;z-index:8;left:0;top:0;width:340px;max-width:calc(100% - 16px);background:var(--panel);border:1px solid #64748b;border-radius:10px;padding:10px 12px 12px;box-shadow:0 8px 28px #0008;display:flex;flex-direction:column;gap:6px}
+#pin-dialog{position:absolute;z-index:8;left:0;top:0;width:300px;max-width:calc(100% - 16px);background:var(--panel);border:1px solid #64748b;border-radius:10px;padding:8px 10px 10px;box-shadow:0 8px 28px #0008;display:flex;flex-direction:column;gap:5px}
+/* docked: the view is narrow or the card would cover a third of it, so it sits at the top of the right panel */
+#pin-dialog.docked{position:fixed;z-index:30;max-width:none;box-shadow:0 6px 18px #0009;border-color:#1f6feb}
+#pin-dialog .pin-foot{display:flex;align-items:center;gap:6px;margin-top:1px}
+#pin-dialog #pin-save{padding:4px 12px}
+#pin-recent{display:flex;flex-wrap:wrap;gap:4px}
+#pin-recent button,#pin-sev button{padding:0 7px;font-size:12px;line-height:1.5;border-radius:11px}
+#pin-recent button.on.g-change_request{background:#7c3aed;border-color:#a371f7;color:#fff}
+#pin-recent button.on.g-problem,#pin-recent button.on.g-other{background:#b35900;border-color:#f0883e;color:#fff}
+#pin-recent button.on.g-note{background:#0e7490;border-color:#39c5cf;color:#fff}
+#pin-sev{display:flex;gap:3px}
+#pin-sev button{padding:1px 7px;font-size:12px}
+#pin-sev button.on[data-sev=low]{background:#9a6700;border-color:#d29922;color:#fff}#pin-sev button.on[data-sev=medium]{background:#bc4c00;border-color:#f0883e;color:#fff}#pin-sev button.on[data-sev=high]{background:#d1242f;border-color:#f85149;color:#fff}
+#pin-recent #pin-more{padding:0 3px;font-size:12px;background:none;border-color:transparent;color:#79c0ff;gap:2px}
+#pin-more:hover{text-decoration:underline;background:none}
+#pin-more .ic{width:14px;height:14px}#pin-more[aria-expanded=true] .ic{transform:rotate(90deg)}
+#pin-chips[hidden]{display:none}
+#pin-dialog #pin-note{resize:none;min-height:28px;padding:4px 7px;line-height:1.35;overflow-y:auto}
+#pin-meaning:empty{display:none}
+#pin-meaning{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#pin-dialog #pin-where{display:flex;gap:8px;font-size:12.5px;white-space:nowrap;min-width:0}
+#pin-dialog #pin-where .nm{overflow:hidden;text-overflow:ellipsis;min-width:0;white-space:nowrap}#pin-dialog #pin-where .kind{flex:none;color:var(--muted)}
 #pin-dialog[hidden]{display:none}
-#pin-dialog textarea{width:100%;resize:vertical}
+#pin-dialog textarea{width:100%}
 #pin-dialog .lab{font-size:14px;font-weight:600}
 #pin-chips{display:flex;flex-wrap:wrap;gap:4px}
 #pin-chips button{padding:3px 8px;font-size:13px;border-radius:12px}

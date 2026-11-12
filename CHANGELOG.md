@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Going to a target shows it: Fit sel, double-click, Fit to part, a pin's fly-to (its point with 40 mm or 4 edge
+  lengths around it), a detector warning and a changed part in Revisions share one routine. A bounded occlusion
+  sample, run once after the move, takes the clearest axis view when the target is hidden and fades every other
+  part when it still is, with a "Focused on <name>. Show whole model" chip (click or Esc restores). Fit and Home
+  never fade. Options: Fade other parts when the target is hidden.
+- Edge snapping never hijacks a click: the part comes from the face under the pointer (through clear parts); an
+  edge of another part wins only in front of that face on an opaque part; edges under 2 mm or 12 px are ignored
+  unless the pointer is within 3 px; hysteresis stops flicker. Shift+click takes the face, Cmd+click the nearest
+  edge, and the hover tip says which.
+- Honest labels: a part that changed outside the scope lock but carries one of your open pins is "Changed,
+  outside the scope lock, pinned by you (pins #3, #7)" in amber, not collateral (`collateral` versus
+  `pinned_outside_scope` in `aad review` and the diff). Pins cut away by a section plane draw faded and say so.
+  Question pins offer Answered, Keep pins Release, Reference pins Done; none offers Not fixed.
+- A smaller pin card: one row of your 6 most recently used reasons, More reasons for the grouped list, the
+  hovered reason's meaning, a one-line note that grows, severity chips. When the view is under 700 px wide or the
+  card would cover a third of it, the card docks at the top of the right panel with a leader to the pin; it never
+  covers the mode hint.
 - The agent sees pins automatically: `aad hook claude` (and `codex`) runs as a `UserPromptSubmit` and
   `SessionStart` hook and adds a short review note to the agent's context only when a packet, the open pins,
   the scope lock or the tour decisions changed since that session last looked. Never fails a prompt, about

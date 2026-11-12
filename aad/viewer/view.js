@@ -101,7 +101,7 @@ const OPT_KEY='aad-viewer-options';
 const OPTS=(()=>{let o={};try{o=JSON.parse(localStorage.getItem(OPT_KEY)||'{}')||{};}catch(e){o={};}
   return {nav:o.nav==='classic'?'classic':'fusion',bg:typeof o.bg==='string'?o.bg:null,edges:typeof o.edges==='boolean'?o.edges:null,
     orbit:o.orbit==='constrained'?'constrained':'free',large:o.large===false?false:true,pivot:['selection','cursor'].includes(o.pivot)?o.pivot:'view',
-    through:o.through===false?false:true};})();
+    through:o.through===false?false:true,fadeHidden:o.fadeHidden===false?false:true};})();
 function saveOpts(){try{localStorage.setItem(OPT_KEY,JSON.stringify(OPTS));}catch(e){}}
 const NAV_HINT={fusion:'Navigation Fusion: middle drag pans, Shift+middle orbits, wheel zooms, double middle-click fits; trackpad: scroll pans, Shift+scroll orbits, pinch zooms',
   classic:'Navigation Classic: left drag orbits, right or middle drag pans, wheel zooms'};
@@ -708,10 +708,10 @@ async function loadViews(){
   applyBg();setEdges(edgesWanted(),false);
   renderViewButtons();
 }
-function fitAll(){exitCamMode();const b=new THREE.Box3();for(const m of meshList)if(effVisible(m))b.expandByObject(m);if(!b.isEmpty())focusBox(b,false);markView(null);}
+function fitAll(){exitCamMode();endTargetFocus();const b=new THREE.Box3();for(const m of meshList)if(effVisible(m))b.expandByObject(m);if(!b.isEmpty())focusBox(b,false);markView(null);}
 // Home: the project's default review view (else iso), the view the page opened with
-function goHome(){const v=VIEWS.find(x=>x.name===(defaultView||(headMode?'front':'iso'))&&x.kind!=='camera');if(v)applyView(v);else{levelUp();fitAll();}}
-function fitSelection(){if(sel)focusKey(sel.key,false);else fitAll();}
+function goHome(){endTargetFocus();const v=VIEWS.find(x=>x.name===(defaultView||(headMode?'front':'iso'))&&x.kind!=='camera');if(v)applyView(v);else{levelUp();fitAll();}}
+function fitSelection(){if(sel)showTarget({keys:[sel.key]},false);else fitAll();}
 $('proj').onclick=()=>{if(!camMode)camAction(()=>setCam(cam===ortho?persp:ortho));};
 $('fit').onclick=()=>camAction(fitAll);
 $('home').onclick=()=>camAction(goHome);
@@ -750,6 +750,9 @@ $('opt-edges').onchange=e=>setEdges(e.target.checked,true);
 $('opt-large').checked=OPTS.large!==false;
 $('opt-through').checked=OPTS.through!==false;
 $('opt-through').onchange=e=>{OPTS.through=e.target.checked;saveOpts();pickMemo=null;edgeMemo=null;lastMove=lastMove||lastPointer;dirty=true;};
+// Options: Fade other parts when the target is hidden (on by default, remembered); off ends a target fade now
+$('opt-fade').checked=OPTS.fadeHidden!==false;
+$('opt-fade').onchange=e=>{OPTS.fadeHidden=e.target.checked;saveOpts();if(!OPTS.fadeHidden)endTargetFocus();};
 $('opt-large').onchange=e=>{OPTS.large=e.target.checked;saveOpts();largeNoted='';largeNote();if(R)R.onLargeMode?.();};
 $('large-note-x').onclick=()=>{$('large-note').hidden=true;};
 
@@ -1273,7 +1276,8 @@ function focusBox(b,animate=true){
   const p=cam.isOrthographicCamera?c.clone().addScaledVector(dir,Math.max(2000,r*6)):c.clone().addScaledVector(dir,r/Math.tan(cam.fov*Math.PI/360));
   placeCam(p,c,cam.isOrthographicCamera?OB/r:null,animate&&!SOFT);
 }
-function focusKey(k,animate=true){if(fishOn())return;const r=nodes.get(k);if(!r)return;const b=new THREE.Box3().setFromObject(r.obj);if(!b.isEmpty())focusBox(b,animate);}
+// fit a part or assembly as a target (the shared routine below: clearest view, fade when still hidden)
+function focusKey(k,animate=true){if(fishOn()||!nodes.has(k))return null;return showTarget({keys:[k]},animate);}
 // fly to a world point at the current zoom (pins)
 function flyToPoint(p,animate=true){
   bakeOrbit();const t=new THREE.Vector3(...p),off=cam.position.clone().sub(camTarget());
@@ -1376,8 +1380,9 @@ canvas.addEventListener('pointermove',e=>{lastMove=e;lastPointer=e;if(down&&Math
 canvas.addEventListener('pointerleave',()=>{lastMove=null;lastPointer=null;$('tip').style.display='none';});
 // Alt pressed or released over the view: hover again at the same spot (the tip says what a click takes now)
 for(const t of ['keydown','keyup'])addEventListener(t,e=>{
-  if(e.key!=='Alt'||!lastPointer)return;
-  const p=lastPointer;lastPointer=lastMove={clientX:p.clientX,clientY:p.clientY,buttons:0,shiftKey:e.shiftKey,altKey:t==='keydown'};hoverT=0;
+  if(!['Alt','Shift','Meta'].includes(e.key)||!lastPointer||e.repeat)return;
+  const p=lastPointer,on=t==='keydown';
+  lastPointer=lastMove={clientX:p.clientX,clientY:p.clientY,buttons:0,shiftKey:e.key==='Shift'?on:e.shiftKey,altKey:e.key==='Alt'?on:e.altKey,metaKey:e.key==='Meta'?on:e.metaKey};hoverT=0;
 });
 // at most one hover pick per 70 ms, none while the camera moves or a button is held (the last pointer position is
 // kept, so the tip catches up once the view settles)
@@ -1391,7 +1396,7 @@ function hover(now){
   const m=ed?ed.mesh:h?h.object:null;
   if(!m){tip.style.display='none';canvas.style.cursor='';return;}
   const r=host.getBoundingClientRect(),nm=nameOf(m),th=throughOf(ed?ed.hit:h);
-  tip.textContent=(ed?`Edge ${ed.record.length_mm.toFixed(2)} mm on ${nm}`:nm)+(th&&th.object!==m?` (through ${nameOf(th.object)})`:'');
+  tip.textContent=(ed?`Edge ${edgeLenText(ed.record.length_mm)} mm on ${nm}`:nm)+(th&&th.object!==m?` (through ${nameOf(th.object)})`:'');
   tip.style.display='block';canvas.style.cursor='pointer';
   // a long tip (a "through" name) flips to the left of the cursor rather than running off the view
   const tw=tip.offsetWidth,x=e.clientX-r.left;tip.style.left=Math.max(4,x+14+tw>r.width-4?x-14-tw:x+14)+'px';tip.style.top=(e.clientY-r.top+14)+'px';
@@ -1466,7 +1471,7 @@ let edgeLinear=false;                       // scripted checks compare the grid 
 // The segments of mesh m that can be within EDGE_PX of the pointer: the segment grid's answer for the pointer ray
 // with the pixel tolerance turned into part-local millimetres along it (grows with depth in perspective), or null
 // (test them all) without a grid. The screen-space test below stays the judge, so the pick is the same as a full scan.
-function edgeCandidates(m,d,px,py,W,H){
+function edgeCandidates(m,d,px,py,W,H,lim=EDGE_PX){
   if(!d.grid||edgeLinear)return null;
   _rn.set(px/W*2-1,-(py/H)*2+1);_rc.setFromCamera(_rn,cam);
   _inv.copy(m.matrixWorld).invert();
@@ -1474,51 +1479,74 @@ function edgeCandidates(m,d,px,py,W,H){
   const L=_rd.length();if(!(L>0))return null;_rd.divideScalar(L);
   const e=m.matrixWorld.elements,sMin=Math.min(Math.hypot(e[0],e[1],e[2]),Math.hypot(e[4],e[5],e[6]),Math.hypot(e[8],e[9],e[10]));
   if(!(sMin>0))return null;
-  const k=1.05*EDGE_PX/sMin;let k0,k1;
+  const k=1.05*lim/sMin;let k0,k1;
   if(cam.isOrthographicCamera){k0=k*(cam.top-cam.bottom)/(H*cam.zoom);k1=0;}
   else{const fwd=cam.getWorldDirection(_rf),c=k*2*Math.tan(cam.fov*D2R/2)/H;k0=0;k1=c*Math.max(0,_rc.ray.direction.dot(fwd))/L;}
   return gridQuery(d.grid,[_ro.x,_ro.y,_ro.z],[_rd.x,_rd.y,_rd.z],k0,k1,gridScratch);
 }
+// Precedence (Pin, Measure and the hover tip): the part comes from the pick-through face hit first. An edge may win
+// over that face only when it is an edge of the same part, or lies in front of the face along the ray on an opaque
+// part. Chains shorter than EDGE_MIN_MM or EDGE_MIN_PX on screen are skipped unless the pointer is within EDGE_NEAR_PX
+// of them. Hysteresis: a fresh edge needs the pointer within EDGE_IN px, the edge taken last stays until EDGE_STAY px,
+// so a 1 px move never flips between face and edge. Shift forces the face (a point pick), Cmd forces the nearest edge
+// within EDGE_FORCE_PX (any visible part, still never one hidden behind the face).
+const EDGE_IN=6,EDGE_STAY=10,EDGE_FORCE_PX=20,EDGE_MIN_MM=2,EDGE_MIN_PX=12,EDGE_NEAR_PX=3;
+const forceFace=ev=>!!(ev&&ev.shiftKey),forceEdge=ev=>!!(ev&&ev.metaKey&&!ev.shiftKey);
+let edgeHyst=null;                          // the last decision: {chain (null: the face), x, y}
 function pickEdge(ev,hit){
-  if(!showEdges||SOFT||fishOn())return null;
+  if(!showEdges||SOFT||fishOn()||forceFace(ev))return null;
   PERF.edgePickCalls++;
-  const key=pickKey(ev);key.alt=throughWanted(ev);if(edgeMemo&&edgeMemo.hit===hit&&edgeMemo.key.alt===key.alt&&sameKey(edgeMemo.key,key))return edgeMemo.r;
-  const r=pickEdgeNow(ev,hit);edgeMemo={key,hit,r};return r;
+  const key=pickKey(ev);key.alt=throughWanted(ev);key.force=forceEdge(ev);
+  if(edgeMemo&&edgeMemo.hit===hit&&edgeMemo.key.alt===key.alt&&edgeMemo.key.force===key.force&&sameKey(edgeMemo.key,key))return edgeMemo.r;
+  const r=pickEdgeNow(ev,hit,true);edgeMemo={key,hit,r};return r;
 }
-function pickEdgeNow(ev,hit){
+const edgeLenText=mm=>(mm>=10?mm.toFixed(1):mm.toFixed(2));
+function pickEdgeNow(ev,hit,hyst=false){
   PERF.edgePicks++;
   const r=canvas.getBoundingClientRect(),px=ev.clientX-r.left,py=ev.clientY-r.top,W=r.width,H=r.height;
   cam.updateMatrixWorld();_vp.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);
   const fwd=cam.getWorldDirection(new THREE.Vector3()),depth=p=>_ec.copy(p).sub(cam.position).dot(fwd);
-  const hitDepth=hit?depth(hit.point):Infinity,tol=Math.max(0.3,0.004*radius);
+  const hitDepth=hit?depth(hit.point):Infinity,tol=Math.max(0.3,0.004*radius),hitMesh=hit?hit.object:null;
+  const force=forceEdge(ev),lim=force?EDGE_FORCE_PX:hyst?EDGE_STAY:EDGE_IN;
+  const prev=hyst&&!force&&edgeHyst&&Math.hypot(px-edgeHyst.x,py-edgeHyst.y)<=24?edgeHyst.chain:null;
   // picking through clear parts: with an opaque face under the cursor, a see-through part's edges are not candidates
   const skipClear=throughWanted(ev)&&!!hit&&!seeThrough(hit.object);
   const pxPerMm=p=>cam.isOrthographicCamera?H*cam.zoom/(cam.top-cam.bottom):H/(2*Math.max(1e-6,depth(p))*Math.tan(cam.fov*D2R/2));
-  let best=null;
+  let best=null,stay=null;
   for(const m of meshList){
     if(!effVisible(m)||(skipClear&&seeThrough(m)))continue;const d=edgeData(m);if(!d||!d.obj.visible)continue;
+    const own=m===hitMesh;
+    if(!force&&hitMesh&&!own&&seeThrough(m))continue;                       // another part's edge must be on an opaque part
     if(!m.geometry.boundingSphere)m.geometry.computeBoundingSphere();
     _es.copy(m.geometry.boundingSphere).applyMatrix4(m.matrixWorld);_ec.copy(_es.center).applyMatrix4(_vp);
-    if(Math.hypot((_ec.x*0.5+0.5)*W-px,(0.5-_ec.y*0.5)*H-py)>_es.radius*pxPerMm(_es.center)+EDGE_PX)continue;
+    if(Math.hypot((_ec.x*0.5+0.5)*W-px,(0.5-_ec.y*0.5)*H-py)>_es.radius*pxPerMm(_es.center)+lim)continue;
     _mvp.multiplyMatrices(_vp,m.matrixWorld);const a=d.a;
-    const cand=edgeCandidates(m,d,px,py,W,H),N=cand?cand.length:d.n;PERF.segTests+=N;
+    const cand=edgeCandidates(m,d,px,py,W,H,lim),N=cand?cand.length:d.n;PERF.segTests+=N;
     for(let ci=0;ci<N;ci++){const s=cand?cand[ci]:ci;
       _ea.set(a[6*s],a[6*s+1],a[6*s+2]).applyMatrix4(_mvp);_eb.set(a[6*s+3],a[6*s+4],a[6*s+5]).applyMatrix4(_mvp);
       if(_ea.z<-1||_ea.z>1||_eb.z<-1||_eb.z>1)continue;
       const ax=(_ea.x*0.5+0.5)*W,ay=(0.5-_ea.y*0.5)*H,bx=(_eb.x*0.5+0.5)*W,by=(0.5-_eb.y*0.5)*H,dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;
       const t=l2>0?Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/l2)):0,dist=Math.hypot(ax+t*dx-px,ay+t*dy-py);
-      if(dist>EDGE_PX||(best&&dist>=best.d))continue;
+      if(dist>lim||(best&&dist>=best.d&&(!prev||(stay&&dist>=stay.d))))continue;
       const local=new THREE.Vector3(a[6*s],a[6*s+1],a[6*s+2]).lerp(new THREE.Vector3(a[6*s+3],a[6*s+4],a[6*s+5]),t);
-      const world=local.clone().applyMatrix4(m.matrixWorld);
-      if(depth(world)>hitDepth+tol)continue;                                  // behind the face under the cursor
+      const world=local.clone().applyMatrix4(m.matrixWorld),dw=depth(world);
+      if(dw>hitDepth+tol)continue;                                            // behind the face under the cursor
+      if(!force&&hitMesh&&!own&&!(dw<hitDepth-tol))continue;                  // another part's edge: only in front of the face
       if(!clipPlanes.every(p=>p.distanceToPoint(world)>=-1e-6))continue;
-      best={d:dist,mesh:m,seg:s,local,world};
+      const ch=edgeChain(d,s);
+      if(!force&&dist>EDGE_NEAR_PX&&(ch.record.length_mm<EDGE_MIN_MM||ch.record.length_mm*pxPerMm(world)<EDGE_MIN_PX))continue;   // a tiny chain
+      const c={d:dist,mesh:m,seg:s,local,world,ch};
+      if(prev&&ch===prev&&(!stay||dist<stay.d))stay=c;
+      if(!best||dist<best.d)best=c;
     }
   }
-  if(!best)return null;
-  const ch=edgeChain(edgeData(best.mesh),best.seg);
-  return {mesh:best.mesh,world:best.world,local:best.local,chain:ch,record:ch.record,px:best.d,
-    hit:{object:best.mesh,point:best.world,face:hit&&hit.object===best.mesh?hit.face:null,through:hit&&hit.object===best.mesh?throughOf(hit):null}};
+  // hysteresis: the edge taken last stays while within EDGE_STAY; any other edge needs EDGE_IN
+  let pick=force?best:stay||(best&&best.d<=EDGE_IN?best:null);
+  if(hyst&&!force)edgeHyst={chain:pick?pick.ch:null,x:px,y:py};
+  if(!pick)return null;
+  const ch=pick.ch;
+  return {mesh:pick.mesh,world:pick.world,local:pick.local,chain:ch,record:ch.record,px:pick.d,seg:pick.seg,forced:force,
+    hit:{object:pick.mesh,point:pick.world,face:hit&&hit.object===pick.mesh?hit.face:null,through:hit&&hit.object===pick.mesh?throughOf(hit):null}};
 }
 // edges drawn over the view (screen-space SVG, so they read on every background): the hovered edge, open edge pins
 // in their pin colour and the edge of the pin being edited; sendPacket draws the same lines into the screenshot
@@ -1553,14 +1581,16 @@ function drawEdgeOverlay(){
 // FOCUS_FADE opacity. It is a look, not a visibility change: no tree checkbox moves, nothing enters the undo history,
 // and the original material values come back exactly when focus ends. The stop's parts get their crease edges drawn
 // on top in the tour colour (the outline). Faded parts count as see-through, so picks reach the stop's parts. ----
-const FOCUS_FADE=0.1,focusOrig=new Map();let focusKeys=null,focusLines=[];
+const FOCUS_FADE=0.1,focusOrig=new Map();let focusKeys=null,focusLines=[],focusOwner=null,focusName='';
 function focusMats(m){const out=Array.isArray(m.material)?[...m.material]:[m.material];for(const c of m.children)if(c.userData.cadEdge&&c.material)out.push(c.material);return out;}
-function setFocus(keys){
+// owner: 'tour' (the change tour drives it) or 'target' (a go-to-target action turned it on because the target was
+// hidden; the "Focused on <name>" chip shows and Esc or the chip ends it)
+function setFocus(keys,owner='tour',name=''){
   for(const [mat,o] of focusOrig){mat.opacity=o.opacity;mat.transparent=o.transparent;mat.depthWrite=o.depthWrite;mat.needsUpdate=true;}
   focusOrig.clear();
   for(const l of focusLines){l.removeFromParent();l.geometry.dispose();l.material.dispose();}focusLines=[];
   const leaves=new Set();for(const k of keys||[])for(const l of (nodes.get(k)?.leaves||[k]))leaves.add(l);
-  focusKeys=leaves.size?leaves:null;
+  focusKeys=leaves.size?leaves:null;focusOwner=focusKeys?owner:null;focusName=focusKeys?name:'';
   if(focusKeys)for(const m of meshList){
     if(focusKeys.has(m.userData.key)){
       const g=edgesGeometry(m,edgeAngleOf(m));if(!g)continue;
@@ -1572,27 +1602,56 @@ function setFocus(keys){
       mat.opacity=Math.min(mat.opacity,FOCUS_FADE);mat.transparent=true;mat.depthWrite=false;mat.needsUpdate=true;
     }
   }
-  pickMemo=null;edgeMemo=null;dirty=true;
+  focusChip();pickMemo=null;edgeMemo=null;dirty=true;
 }
 const inFocus=k=>!focusKeys||focusKeys.has(k);
+// the in-view chip while a target fade is on: "Focused on <name>. Show whole model" (click or Esc ends the fade)
+function focusChip(){
+  const c=$('focus-chip');if(!c)return;const on=focusOwner==='target';c.hidden=!on;
+  if(on)$('focus-chip-name').textContent=focusName||'the target';
+}
+function endTargetFocus(){if(focusOwner!=='target')return false;setFocus(null);return true;}
+$('focus-chip').onclick=()=>endTargetFocus();$('focus-chip').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();endTargetFocus();}};
 // see-through as the part is drawn without the focus fade (what really hides what)
 function clearUnfaded(m){
   const mats=Array.isArray(m.material)?m.material:[m.material];
   return mats.every(x=>{const o=focusOrig.get(x)||x;return (o.transparent&&o.opacity<CLEAR_OPACITY)||(x.transmission||0)>0;});
 }
-// share of sample points on the parts `keys` that a camera looking along -dir sees (opaque other parts hide them)
-const _vc=new THREE.Raycaster();_vc.firstHitOnly=false;
-function viewClearance(keys,dir){
-  const leaves=new Set();for(const k of keys)for(const l of (nodes.get(k)?.leaves||[k]))leaves.add(l);
-  const parts=meshList.filter(m=>leaves.has(m.userData.key)&&effVisible(m));if(!parts.length)return 0;
-  const list=meshList.filter(m=>effVisible(m)&&!prepPending.has(m.geometry)),far=Math.max(100,radius*4),pts=[],v=new THREE.Vector3();
+// ---- going to a target (Fit sel, double-click, a pin's fly to, a detector warning, a changed part in Revisions, a
+// tour stop): one routine. The camera fits the target looking along the current direction; then a bounded sample
+// (at most TARGET_SAMPLES points on the target, one ray each per direction tried, run once, never per frame) says
+// what share of it is seen. Under half: the six axis views are tried and the clearest taken. Still under half: every
+// other part fades (the focus look above) when Options "Fade other parts when the target is hidden" is on. Fit and
+// Home never fade and end a target fade. ----
+const TARGET_SAMPLES=48,TARGET_SCAN=40000;
+const leavesOf=keys=>{const s=new Set();for(const k of keys||[])for(const l of (nodes.get(k)?.leaves||[k]))s.add(l);return s;};
+// sample points of the target: vertices of its parts (inside `box` when given), spread evenly, plus `point`; at most
+// TARGET_SCAN vertices are looked at over all parts (a large assembly takes every n-th part), clipped-away points
+// never count
+function targetSamples(leaves,box,point){
+  let parts=meshList.filter(m=>leaves.has(m.userData.key)&&effVisible(m));const pts=[],v=new THREE.Vector3();
+  if(parts.length>TARGET_SAMPLES){const st=parts.length/TARGET_SAMPLES;parts=Array.from({length:TARGET_SAMPLES},(_,i)=>parts[Math.floor(i*st)]);}
   scene.updateMatrixWorld();
-  const per=Math.max(6,Math.floor(48/parts.length));
-  for(const m of parts){const p=m.geometry.attributes.position,step=Math.max(1,Math.floor(p.count/per));
-    for(let i=0;i<p.count&&pts.length<200;i+=step)pts.push(v.fromBufferAttribute(p,i).applyMatrix4(m.matrixWorld).clone());}
-  const d=dir.clone().normalize();let seen=0;
+  const kept=p=>clipPlanes.every(c=>c.distanceToPoint(p)>=0);
+  if(point&&kept(point))pts.push(point.clone());
+  const per=Math.max(1,Math.floor(TARGET_SAMPLES/Math.max(1,parts.length))),scan=Math.max(64,Math.floor(TARGET_SCAN/Math.max(1,parts.length)));
+  for(const m of parts){
+    const p=m.geometry.attributes.position,step=Math.max(1,Math.floor(p.count/scan)),got=[];
+    for(let i=0;i<p.count;i+=step){v.fromBufferAttribute(p,i).applyMatrix4(m.matrixWorld);if((!box||box.containsPoint(v))&&kept(v))got.push(v.clone());}
+    const st=Math.max(1,got.length/per);for(let j=0;j<got.length&&pts.length<TARGET_SAMPLES+1;j+=st)pts.push(got[Math.floor(j)]);
+  }
+  return pts;
+}
+// share of `pts` seen from the eye `eye`: a ray from the eye to each point; opaque parts that are not the target hide
+// it (clear parts never do, section-removed hits never do, nothing behind the eye counts)
+const _vc=new THREE.Raycaster();_vc.firstHitOnly=false;
+function clearanceOf(pts,leaves,eye){
+  if(!pts.length)return 0;
+  const list=meshList.filter(m=>effVisible(m)&&!prepPending.has(m.geometry)),eps=Math.max(0.05,radius*1e-4),dv=new THREE.Vector3();
+  let seen=0;PERF.targetRays=(PERF.targetRays||0)+pts.length;
   for(const q of pts){
-    _vc.set(q.clone().addScaledVector(d,far),d.clone().negate());_vc.far=far-Math.max(0.05,radius*1e-4);
+    dv.copy(q).sub(eye);const L=dv.length();if(!(L>eps)){seen++;continue;}
+    _vc.set(eye,dv.divideScalar(L));_vc.far=L-eps;
     let hidden=false;
     for(const h of _vc.intersectObjects(list,false)){
       if(leaves.has(h.object.userData.key)||clearUnfaded(h.object))continue;
@@ -1601,28 +1660,55 @@ function viewClearance(keys,dir){
     }
     if(!hidden)seen++;
   }
-  return pts.length?seen/pts.length:0;
+  return seen/pts.length;
 }
-// fit the camera to the parts `keys` (margin as Fit sel), looking along the current direction unless at most half of
-// the parts' sample points would be seen from it; then the clearest of the six axis views. dir: a preferred
-// direction (a stop's own camera). Animated. Returns {dir, axis, seen}.
-const AXES=[['+X',[1,0,0]],['-X',[-1,0,0]],['+Y',[0,1,0]],['-Y',[0,-1,0]],['+Z',[0,0,1]],['-Z',[0,0,-1]]];
-function fitParts(keys,dir=null,animate=true){
-  const b=new THREE.Box3();for(const k of keys){const r=nodes.get(k);if(r)b.expandByObject(r.obj);}
-  if(b.isEmpty())return null;
-  bakeOrbit();
-  let d=(dir?dir.clone():cam.position.clone().sub(camTarget())).normalize(),axis=null,seen=viewClearance(keys,d);
-  if(seen<=0.5){
-    let best=null;
-    for(const [n,a] of AXES){const ad=new THREE.Vector3(...a),s=viewClearance(keys,ad),score=s+0.01*ad.dot(d);if(!best||score>best.score)best={n,ad,s,score};}
-    if(best&&best.s>seen){d=best.ad;axis=best.n;seen=best.s;}
-  }
+// where the camera goes to frame a sphere (centre c, radius r) looking along -d
+function eyeFor(c,r,d){return cam.isOrthographicCamera?c.clone().addScaledVector(d,Math.max(2000,r*6)):c.clone().addScaledVector(d,r/Math.tan(cam.fov*Math.PI/360));}
+// share of sample points on the parts `keys` seen from the camera fitted to them looking along -dir (scripted checks)
+function viewClearance(keys,dir){
+  const L=leavesOf(keys),b=new THREE.Box3();for(const k of keys){const n=nodes.get(k);if(n)b.expandByObject(n.obj);}if(b.isEmpty())return 0;
   const c=b.getCenter(new THREE.Vector3()),r=Math.max(2,b.getBoundingSphere(new THREE.Sphere()).radius)*1.25;
-  if(axis){cam.up.set(0,0,1);if(Math.abs(d.z)>0.99){cam.up.set(0,1,0);}}
-  const p=cam.isOrthographicCamera?c.clone().addScaledVector(d,Math.max(2000,r*6)):c.clone().addScaledVector(d,r/Math.tan(cam.fov*Math.PI/360));
-  placeCam(p,c,cam.isOrthographicCamera?OB/r:null,animate&&!SOFT);
-  return {dir:d.toArray(),axis,seen};
+  return clearanceOf(targetSamples(L,null,null),L,eyeFor(c,r,dir.clone().normalize()));
 }
+const AXES=[['+X',[1,0,0]],['-X',[-1,0,0]],['+Y',[0,1,0]],['-Y',[0,-1,0]],['+Z',[0,0,1]],['-Z',[0,0,-1]]];
+// t: {keys, box (world Box3, default the parts' box), point (world Vector3) + radius (mm: frame that sphere), dir
+// (preferred view direction, default the current one), name (for the chip), fade: 'auto' | 'never'}. The camera
+// move is animated unless animate is false. Returns {dir, axis, seen, faded, samples} or null with nothing to frame.
+function showTarget(t,animate=true){
+  if(fishOn())return null;
+  exitCamMode();
+  const keys=(t.keys||[]).filter(k=>nodes.has(k)),leaves=leavesOf(keys);
+  let c,r,box=null;
+  if(t.point&&t.radius){c=t.point.clone();r=t.radius;box=new THREE.Box3().setFromCenterAndSize(c,new THREE.Vector3(1,1,1).multiplyScalar(2*r));}
+  else{
+    box=t.box?t.box.clone():new THREE.Box3();if(!t.box)for(const k of keys){const n=nodes.get(k);if(n)box.expandByObject(n.obj);}
+    if(box.isEmpty())return null;
+    c=box.getCenter(new THREE.Vector3());r=Math.max(2,box.getBoundingSphere(new THREE.Sphere()).radius)*1.25;
+  }
+  bakeOrbit();
+  const t0=performance.now();
+  let d=(t.dir?t.dir.clone():cam.position.clone().sub(camTarget())).normalize(),axis=null,seen=1;
+  const pts=leaves.size?targetSamples(leaves,t.point||t.box?box.clone().expandByScalar(0.01*r+0.01):null,t.point||null):[];
+  if(pts.length){
+    seen=clearanceOf(pts,leaves,eyeFor(c,r,d));
+    if(seen<0.5){
+      let best=null;
+      for(const [n,a] of AXES){const ad=new THREE.Vector3(...a),s=clearanceOf(pts,leaves,eyeFor(c,r,ad)),score=s+0.01*ad.dot(d);if(!best||score>best.score)best={n,ad,s,score};}
+      if(best&&best.s>seen){d=best.ad;axis=best.n;seen=best.s;}
+    }
+  }
+  if(axis){cam.up.set(0,0,1);if(Math.abs(d.z)>0.99)cam.up.set(0,1,0);}
+  placeCam(eyeFor(c,r,d),c,cam.isOrthographicCamera?OB/r:null,animate&&!SOFT);
+  const fade=t.fade||'auto';let faded=false;
+  if(fade==='auto'&&seen<0.5&&OPTS.fadeHidden!==false&&keys.length){setFocus(keys,'target',t.name||nameOfKey(keys[0]));faded=true;}
+  else endTargetFocus();
+  lastTarget={dir:d.toArray(),axis,seen:+seen.toFixed(3),faded,samples:pts.length,r:+r.toFixed(3),ms:+(performance.now()-t0).toFixed(1)};
+  return lastTarget;
+}
+let lastTarget=null;
+const nameOfKey=k=>{const r=nodes.get(k);return r?(r.leaf?r.leaf.name:r.obj.name):k;};
+// the tour's fit: the same routine, the fade is the tour's own (setFocus with its stop's parts)
+function fitParts(keys,dir=null,animate=true){return showTarget({keys,dir,fade:'never'},animate);}
 // ---- undo / redo: one history of committed state (visibility, section, explode, selection, camera buttons,
 // projection, movable group pose). Orbit drags are not in it; a camera snapshot is only restored when the step
 // being undone or redone was itself a camera action. ----
@@ -1696,12 +1782,13 @@ addEventListener('keydown',e=>{
 });
 addEventListener('keydown',e=>{
   if(e.metaKey||e.ctrlKey||e.altKey||typing(e.target))return;
+  if(e.key==='Escape'&&endTargetFocus()){e.preventDefault();return;}
   if(R&&R.onKey(e))return;
   if(e.key==='Escape'){
     if(camMode){camAction(()=>{const v=VIEWS.find(x=>x.name===viewBefore&&x.kind!=='camera');if(v)applyView(v);else fitAll();});return;}
     if(sel){clearSel();commit();}return;
   }
-  if((e.key==='f'||e.key==='F')&&sel)return camAction(()=>focusKey(sel.key,false));
+  if((e.key==='f'||e.key==='F')&&sel)return camAction(fitSelection);
   if((e.key==='h'||e.key==='H')&&(e.shiftKey||!R)&&!mask)return camAction(goHome);   // Shift+H (H alone toggles pins when review is on)
   if(mask)maskKey(e);
 });
@@ -1927,7 +2014,7 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
   get cam(){return cam;},get meshList(){return meshList;},get modelRoot(){return modelRoot;},get M(){return M;},get sel(){return sel;},
   get bbox(){return bbox;},get ready(){return ready;},get restoring(){return restoring;},
   setLeftAction:a=>{leftAction=a==='none'?ACT.NONE:ACT.ROTATE;mouseMap();},
-  pickHit,pickOpaque,seeThrough,pickInfo,pickEdge,setFocus,inFocus,focusActive:()=>!!focusKeys,fitParts,viewClearance,restoreCam,edgeScreen,featureChains,get loadedMtime(){return loadedMtime;},partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
+  pickHit,pickOpaque,seeThrough,pickInfo,pickEdge,setFocus,inFocus,focusActive:()=>!!focusKeys,fitParts,showTarget,endTargetFocus,clipped:p=>clipPlanes.some(c=>c.distanceToPoint(p)<-1e-6),viewClearance,restoreCam,edgeScreen,featureChains,get loadedMtime(){return loadedMtime;},partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
   dirty:()=>{dirty=true;},renderNow:()=>{if(!SOFT)renderNow();},soft:SOFT,
   camera:()=>{const c=snapCam();return {projection:c.proj==='o'?'ortho':'persp',position:c.p,target:c.t,up:c.u,zoom:c.z,view:c.v,fov:cam.isPerspectiveCamera?cam.fov:null};},
   hiddenKeys:()=>[...vis].filter(([,v])=>!v).map(([k])=>k),
@@ -1938,7 +2025,7 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
 window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clearSel,undo,redo,commit,get cube(){return cube;},
   meshes:()=>meshList,toScreen:p=>{const r=canvas.getBoundingClientRect(),v=new THREE.Vector3(...p).project(cam);return [r.left+(v.x+1)/2*r.width,r.top+(1-v.y)/2*r.height];},
   get review(){return R;},panes:()=>({...paneWidths(),saved:{...pane}}),get weight(){return Wt;},get lastCopied(){return lastCopied;},
-  edgeAt:(x,y,o={})=>{const e={clientX:x,clientY:y};edgeLinear=!!o.linear;try{const ed=pickEdgeNow(e,pickHitNow(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px,seg:ed.seg}:null;}finally{edgeLinear=false;}},
+  edgeAt:(x,y,o={})=>{const e={clientX:x,clientY:y,shiftKey:!!o.shift,metaKey:!!o.meta};edgeLinear=!!o.linear;try{if(forceFace(e))return null;const ed=pickEdgeNow(e,pickHitNow(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px,seg:ed.seg}:null;}finally{edgeLinear=false;}},
   get perf(){const r=prepRun;return {...PERF,prepDone:r?r.done:0,prepTotal:r?r.total:0,frame:frameNo};},
   edgeChains:k=>{let m=null;nodes.get(k)?.obj.traverse(o=>{if(!m&&o.isMesh)m=o;});return m?featureChains(m).map(c=>c.record):[];},
   get hoverEdge(){return hoverEdge?{key:hoverEdge.mesh.userData.key,length:hoverEdge.record.length_mm}:null;},pickAt:(x,y,o={})=>{const h=pickHit({clientX:x,clientY:y,altKey:!!o.alt});const i=pickInfo(h);if(i){delete i.mesh;const t=throughOf(h);i.through=t?t.object.userData.key:null;}return i;},
@@ -1949,7 +2036,8 @@ window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clear
   lensHits:(x,y)=>{if(!fishOn())return null;const d=fishDir({clientX:x,clientY:y});if(!d)return [];ray.set(new THREE.Vector3(...camMode.eye),d);
     const obs=new Set();for(const o of observerObjs())o.traverse(m=>obs.add(m));
     return ray.intersectObjects(meshList.filter(m=>effVisible(m)&&!obs.has(m)),false).slice(0,6).map(h=>(h.object.userData.leaf?h.object.userData.leaf.component:h.object.name)+(h.object.material.transparent?' (clear)':'')+' @'+h.distance.toFixed(1));},
-  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,up:cam.up.toArray(),screenUp:(cam.updateMatrixWorld(),new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1).toArray()),orbitMode:OPTS.orbit,pivotMode:OPTS.pivot,pickThrough:OPTS.through!==false,focus:focusKeys?{parts:focusKeys.size,faded:meshList.filter(m=>!focusKeys.has(m.userData.key)).length,outlines:focusLines.length}:null,
+  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,up:cam.up.toArray(),screenUp:(cam.updateMatrixWorld(),new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1).toArray()),orbitMode:OPTS.orbit,pivotMode:OPTS.pivot,pickThrough:OPTS.through!==false,focus:focusKeys?{parts:focusKeys.size,faded:meshList.filter(m=>!focusKeys.has(m.userData.key)).length,outlines:focusLines.length,owner:focusOwner,name:focusName}:null,
+    goTarget:lastTarget,focusChip:$('focus-chip')&&!$('focus-chip').hidden?$('focus-chip').textContent.replace(/\s+/g,' ').trim():null,fadeHidden:OPTS.fadeHidden!==false,
     pivot:pivotFor(null)?.toArray()||null,viewCentre:viewCentre()?.toArray()||null,pivotShown:pivotObj.visible,pivotAt:pivotObj.visible?pivotObj.position.toArray():null,
     hidden:[...vis].filter(([,v])=>!v).map(([k])=>k),clip:clipPlanes.map(p=>[p.normal.toArray(),p.constant]),
     explode:+$('explode').value,grid:showGrid,view:activeView,cameraView:camMode?camMode.name:null,fov:cam.isPerspectiveCamera?cam.fov:null,

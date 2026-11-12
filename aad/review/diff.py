@@ -6,7 +6,9 @@ Every part of both models gets mesh.stats(); parts are matched by name and class
              principal moments equal within tolerance (a rigid move or turn)
   changed    anything else
   added / removed   the name exists on one side only
-With a scope (node names that may change), every non-unchanged part outside it is collateral. Detectors
+With a scope (node names that may change), every non-unchanged part outside it is collateral, except a part that
+carries an open pin of the reviewer's (`pinned`): his pin asked for that change, so it is listed apart as
+pinned_outside_scope. Detectors
 (detectors.py) add warnings for changed and added parts.
 
 pin_changes() answers, per pin, whether its part changed and whether any geometry within NEAR_MM of its point
@@ -108,9 +110,10 @@ def classify(a, b, pos_tol=POS_TOL, rel=REL_TOL):
 
 def diff(a_paths, b_paths, scope=None, a_label="baseline", b_label="current", a_id=None, b_id=None,
          a_build=None, b_build=None, pos_tol=POS_TOL, rel=REL_TOL, thin_mm=detectors.THIN_MM,
-         contact_mm=detectors.CONTACT_MM, detect=True, time_budget=12.0, a_kind=None, a_packet=None):
+         contact_mm=detectors.CONTACT_MM, detect=True, time_budget=12.0, a_kind=None, a_packet=None, pinned=None):
     """Diff document (schemas/diff.schema.json) of model b against baseline a. `scope`: node names allowed to
-    change, or None when no scope lock is set."""
+    change, or None when no scope lock is set. `pinned`: {node name: [pin numbers]} of the reviewer's open pins; a
+    part outside the scope that changed and carries one is pinned_outside_scope, not collateral."""
     t0 = time.time()
     pa, sa, ska = load(a_paths)
     pb, sb, skb = load(b_paths)
@@ -128,9 +131,13 @@ def diff(a_paths, b_paths, scope=None, a_label="baseline", b_label="current", a_
         counts[status] += 1
         part = pb.get(n) or pa.get(n)
         in_scope = (n in scope_set) if scope_set is not None else None
-        rows.append(dict(name=n, status=status, file=(part.extras or {}).get("file"), in_scope=in_scope,
-                         collateral=bool(scope_set is not None and status != "unchanged" and not in_scope),
-                         a=a, b=b, delta=delta, warnings=[]))
+        outside = bool(scope_set is not None and status != "unchanged" and not in_scope)
+        pins = sorted((pinned or {}).get(n) or [])
+        row = dict(name=n, status=status, file=(part.extras or {}).get("file"), in_scope=in_scope,
+                   collateral=outside and not pins, a=a, b=b, delta=delta, warnings=[])
+        if outside and pins:
+            row.update(pinned_outside_scope=True, pins=pins)
+        rows.append(row)
     warns = []
     if detect:
         warns = detectors.run(rows, pa, pb, sa, sb, thin_mm=thin_mm, contact_mm=contact_mm,
@@ -139,8 +146,11 @@ def diff(a_paths, b_paths, scope=None, a_label="baseline", b_label="current", a_
         for w in warns:
             by[w["part"]]["warnings"].append(w)
     collateral = [r["name"] for r in rows if r["collateral"]]
+    pinned_out = [dict(name=r["name"], pins=r["pins"]) for r in rows if r.get("pinned_outside_scope")]
     order = dict(changed=0, added=1, removed=2, moved=3, unchanged=4)
-    rows.sort(key=lambda r: (not r["collateral"], order[r["status"]], -len(r["warnings"]), r["name"]))
+    rows.sort(key=lambda r: (not r["collateral"], not r.get("pinned_outside_scope"), order[r["status"]],
+                             -len(r["warnings"]), r["name"]))
+    pinned_out.sort(key=lambda x: x["name"])
     doc = dict(schema=SCHEMA, created=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                seconds=round(time.time() - t0, 2),
                a=dict(dict(label=a_label, id=a_id, build=a_build, files=[os.path.abspath(p) for p in a_paths]),
@@ -148,8 +158,9 @@ def diff(a_paths, b_paths, scope=None, a_label="baseline", b_label="current", a_
                b=dict(label=b_label, id=b_id, build=b_build, files=[os.path.abspath(p) for p in b_paths]),
                tolerances=dict(position_mm=pos_tol, relative=rel, thin_mm=thin_mm, contact_mm=contact_mm),
                scope=sorted(scope_set) if scope_set is not None else None,
-               summary=dict(counts, collateral=len(collateral), warnings=len(warns)),
-               collateral=collateral, parts=rows, warnings=warns, skipped=ska + skb)
+               summary=dict(counts, collateral=len(collateral), pinned_outside_scope=len(pinned_out),
+                            warnings=len(warns)),
+               collateral=collateral, pinned_outside_scope=pinned_out, parts=rows, warnings=warns, skipped=ska + skb)
     return validate(doc, "diff")
 
 
@@ -158,16 +169,24 @@ def summary(doc, limit=40):
     if not doc:
         return None
     changed = [dict(name=r["name"], status=r["status"], collateral=r["collateral"],
+                    **({"pinned_outside_scope": True, "pins": r["pins"]} if r.get("pinned_outside_scope") else {}),
                     distance_mm=round(r["delta"]["distance"], 3) if r.get("delta") else None,
                     volume_mm3=round(r["delta"]["volume"], 2) if r.get("delta") else None,
                     warnings=[w["kind"] for w in r["warnings"]])
                for r in doc["parts"] if r["status"] != "unchanged"]
     return dict(against=doc["a"]["label"], against_id=doc["a"].get("id"), against_build=doc["a"].get("build"),
                 against_kind=doc["a"].get("kind"), created=doc["created"],
-                summary=doc["summary"], collateral=doc["collateral"], parts=changed[:limit],
+                summary=doc["summary"], collateral=doc["collateral"],
+                pinned_outside_scope=doc.get("pinned_outside_scope") or [], parts=changed[:limit],
                 more=max(0, len(changed) - limit),
                 warnings=[dict(kind=w["kind"], part=w["part"], message=w["message"], **({"hint": True} if w.get("hint") else {}))
                           for w in doc["warnings"][:limit]])
+
+
+def pins_text(rows):
+    """'pins #3, #7' for rows carrying pin numbers."""
+    ns = sorted({n for r in rows for n in r.get("pins") or []})
+    return ("pin " if len(ns) == 1 else "pins ") + ", ".join(f"#{n}" for n in ns)
 
 
 def format_text(doc):
@@ -175,12 +194,16 @@ def format_text(doc):
     lines = [f"diff {doc['b']['label']} against {doc['a']['label']}: {s['changed']} changed, {s['moved']} moved, "
              f"{s['added']} added, {s['removed']} removed, {s['unchanged']} unchanged ({doc['seconds']} s)"]
     if doc["scope"] is not None:
+        po = doc.get("pinned_outside_scope") or []
         lines.append(f"scope lock: {len(doc['scope'])} part(s) may change; "
-                     f"{len(doc['collateral'])} COLLATERAL change(s) outside it")
+                     f"{len(doc['collateral'])} COLLATERAL change(s) outside it"
+                     + (f"; {len(po)} changed outside it on parts you pinned ({pins_text(po)}), not collateral"
+                        if po else ""))
     for r in doc["parts"]:
         if r["status"] == "unchanged":
             continue
-        tag = "COLLATERAL " if r["collateral"] else ""
+        tag = "COLLATERAL " if r["collateral"] else (
+            f"PINNED BY YOU, outside the scope ({pins_text([r])}) " if r.get("pinned_outside_scope") else "")
         d = r.get("delta") or {}
         extra = ""
         if d:

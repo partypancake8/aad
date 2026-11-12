@@ -178,7 +178,8 @@ class ReviewAPI:
         cur = self.current_build()
         with self._diff_lock:
             doc = D.diff(paths, self.model_files(), scope=scope, a_label=label, b_label="current build",
-                         a_id=bid, b_id=self.V.version_id, a_build=abuild, b_build=cur, a_kind=kind, a_packet=packet)
+                         a_id=bid, b_id=self.V.version_id, a_build=abuild, b_build=cur, a_kind=kind, a_packet=packet,
+                         pinned=self.store.pinned_parts(packet if kind == "reviewed" else None) if scope else None)
             self.store.save_diff(doc)
             reopened = self.store.reopen_changed(doc, cur, diff_for=self._diff_against_build)
             keep = keep_changes(paths, self.model_files(), self.store.pins())

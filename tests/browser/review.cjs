@@ -53,6 +53,12 @@ function validate(file,schema){
   assert.equal(r.status,0,`${file} does not validate as ${schema}: ${r.stderr}`);return r.stdout.trim();
 }
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+// a reason chip on the pin card: from the recently used row, else from More reasons (one click saves the pin)
+async function pickChip(page,cls){
+  const r=page.locator(`#pin-recent [data-class=${cls}]`);if(await r.count())return r.click();
+  if(await page.locator('#pin-chips').isHidden())await page.locator('#pin-more').click();
+  return page.locator(`#pin-chips [data-class=${cls}]`).click();
+}
 (async()=>{
  if(ONLY_R10){await checkClearModel();return;}
  const browser=await chromium.launch({headless:true});
@@ -368,9 +374,9 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
    ok('pin editor non-modal: no backdrop, clear of the pin, orbit, zoom and header drag while open');
    await camSet(c0);await page.evaluate(()=>{viewer.controls.enableDamping=true;});await page.waitForTimeout(300);   // back to the view the parts were sampled in
   }
-  await page.locator('#pin-note').fill(note);await page.locator('#pin-severity').selectOption(sev);
+  await page.locator('#pin-note').fill(note);await page.locator(`#pin-sev [data-sev=${sev}]`).click();
   await page.waitForTimeout(300);
-  await page.locator(`#pin-chips [data-class=${cls}]`).click();          // one click on a class chip saves the pin
+  await pickChip(page,cls);          // one click on a class chip saves the pin
   await page.waitForTimeout(400);
   assert.equal(await page.locator('#pin-dialog').isVisible(),false,'a class chip saves and closes the editor');
  };
@@ -391,7 +397,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  // ---- the note is optional: a class alone is a complete pin; Enter in the empty note and a click away both save ----
  for(const how of ['enter','click-away']){
   await page.locator('#modes [data-mode=pin]').click();await page.mouse.click(A.x,A.y);await page.locator('#pin-dialog').waitFor({state:'visible'});
-  assert.equal(await page.locator('#pin-note').getAttribute('placeholder'),'Optional');
+  assert.equal(await page.locator('#pin-note').getAttribute('placeholder'),'Note, optional');
   if(how==='enter'){await page.locator('#pin-note').focus();await page.keyboard.press('Enter');}
   else{const c=await page.evaluate(()=>viewer.review.state().editor.card);const fx=c.x>box.x+box.width/2?box.x+40:box.x+box.width-60;await page.mouse.click(fx,box.y+box.height-40);}
   await page.waitForTimeout(400);
@@ -489,13 +495,17 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await row.click();await page.waitForFunction(b=>viewer.review.state().diff?.against===b&&viewer.review.state().holo.visible,bl,{timeout:180000});
  rv=(await st()).review;
  ok(`Revisions: ${opts.length} older revision(s); ${bl} as a green hologram of ${differing.length} part(s) over the solid model, whole model, flick with \\ and Show old, click again and Esc off, arrows and hover preview`);
+ // a part with one of the reviewer's open pins asked for its change: listed as pinned by you, never collateral
+ const openPinned=new Set((await snapPins(page)).p.filter(p=>p.status!=='resolved').flatMap(p=>p.anchor?[p.anchor.part.node]:p.parts.map(x=>x.node)));
  for(const r of full.parts){
-  const expect=r.status!=='unchanged'&&r.name!==A.node;
-  assert.equal(r.collateral,expect,`collateral flag of ${r.name} (${r.status})`);
+  const outside=r.status!=='unchanged'&&r.name!==A.node;
+  assert.equal(r.collateral,outside&&!openPinned.has(r.name),`collateral flag of ${r.name} (${r.status})`);
+  assert.equal(!!r.pinned_outside_scope,outside&&openPinned.has(r.name),`pinned-outside-scope flag of ${r.name}`);
  }
  assert.deepEqual([...D.collateral].sort(),full.parts.filter(r=>r.collateral).map(r=>r.name).sort());
  const banner=await page.locator('#diff-out .banner').first().textContent();
- if(D.collateral.length)assert.match(banner,/COLLATERAL/);ok(`diff vs ${bl}: ${s.changed} changed, ${s.moved} moved, ${s.added} added, ${s.removed} removed, ${D.collateral.length} collateral`);
+ if(D.collateral.length)assert.match(banner,/COLLATERAL/);
+ if((full.pinned_outside_scope||[]).length)assert.match(await page.locator('#diff-out .banner.pinned').textContent(),/^Changed, outside the scope lock, pinned by you \(pins? #\d/);ok(`diff vs ${bl}: ${s.changed} changed, ${s.moved} moved, ${s.added} added, ${s.removed} removed, ${D.collateral.length} collateral`);
  // More: tint, ghost baseline and unchanged too, all off by default; retention size and Clear old revisions
  assert.equal(await page.locator('#rev-more').isVisible(),false,'More starts collapsed');
  await page.locator('#rev-more-btn').click();assert.match(await page.locator('#rev-size').textContent(),/Stored revisions [\d.]+ MB/);assert.match(await page.locator('#rev-keep').inputValue(),/^\d+$/,'Stored builds to keep shows the setting');
@@ -550,7 +560,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  assert.equal((await page.evaluate(()=>viewer.review.state().editor)).kind,'edge');assert.match(await page.locator('#pin-dialog-h').textContent(),/edge/i);
  await page.waitForTimeout(300);
  assert(await page.locator('#edge-lines polyline.draft').count()>0,'the edge being pinned is drawn');
- await page.locator('#pin-chips [data-class=weird_geometry]').click();await page.waitForTimeout(700);
+ await pickChip(page,'weird_geometry');await page.waitForTimeout(700);
  const edgePin=await page.evaluate(()=>{const p=viewer.review.snapshot().p;return p[p.length-1];});
  assert.equal(edgePin.kind,'edge');assert(edgePin.edge.points.length>=2,'edge polyline stored');
  assert(Math.abs(edgePin.edge.length_mm-cand.length)<1e-3,'edge length stored');assert.equal(edgePin.anchor.part.key,cand.key);
@@ -606,14 +616,14 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  assert.match(await page.locator('#modehint').textContent(),/^Follow-up to pin #\d+/);
  await page.mouse.move(A.x,A.y,{steps:4});await page.mouse.click(A.x,A.y);await page.locator('#pin-dialog').waitFor({state:'visible'});
  assert.match(await page.locator('#pin-dialog-h').textContent(),/^Follow-up to pin #\d+$/);
- await page.locator('#pin-chips [data-class=weird_geometry]').click();await page.waitForTimeout(400);
+ await pickChip(page,'weird_geometry');await page.waitForTimeout(400);
  const F1=(await rstate()).pins.slice(-1)[0];assert.equal(F1.parent,P1,'the follow-up records its parent');assert.equal((await rstate()).mode,'select');
  assert.equal(await pinLi(F1.id).evaluate(e=>e.classList.contains('child')&&e.previousElementSibling?.dataset.pin),P1,'listed indented right under its parent');
  await page.mouse.click(A.x,A.y,{button:'right'});await page.locator('#component-menu').waitFor({state:'visible'});
  assert.match(await page.locator('#followup-component').textContent(),/^Add follow-up pin \(to #\d+\)$/,'the part menu offers a follow-up');
  await page.locator('#followup-component').click();await page.locator('#pin-dialog').waitFor({state:'visible'});
  assert.match(await page.locator('#pin-dialog-h').textContent(),/^Follow-up to pin #\d+$/);
- await page.locator('#pin-chips [data-class=fit_clearance]').click();await page.waitForTimeout(400);
+ await pickChip(page,'fit_clearance');await page.waitForTimeout(400);
  const F2=(await rstate()).pins.slice(-1)[0],F2p=await pinOf(F2.parent);
  assert(F2.parent&&F2p&&F2p.status!=='resolved','the part-menu follow-up records an open parent pin');
  assert.equal(await pinLi(F2.id).evaluate(e=>e.classList.contains('child')),true);
@@ -801,7 +811,7 @@ async function pointOn(page,key){
 async function pinAt(X,P,cls,note=''){
   const {page}=X;await page.locator('#modes [data-mode=pin]').click();await page.mouse.click(P.x,P.y);
   await page.locator('#pin-dialog').waitFor({state:'visible'});if(note)await page.locator('#pin-note').fill(note);
-  await page.locator(`#pin-chips [data-class=${cls}]`).click();await page.waitForTimeout(400);
+  await pickChip(page,cls);await page.waitForTimeout(400);
   assert.equal(await page.locator('#pin-dialog').isVisible(),false,`one click on ${cls} saves`);
   return lastPin(page);
 }
@@ -813,6 +823,7 @@ async function checkGroupedPinCard(X){
   await page.locator('#tabs [data-tab=pins]').click();
   await page.locator('#modes [data-mode=pin]').click();await page.mouse.click(A.x,A.y);await page.locator('#pin-dialog').waitFor({state:'visible'});
   await page.waitForTimeout(300);
+  await page.locator('#pin-more').click();                                  // More reasons opens the full grouped list
   const groups=await page.locator('#pin-chips .cgroup').evaluateAll(gs=>gs.map(g=>({id:g.dataset.group,label:g.querySelector('.cgl').textContent,
     chips:[...g.querySelectorAll('button')].map(b=>b.dataset.class)})));
   assert.deepEqual(groups.map(g=>g.id),GROUPS,'chip groups in order');assert.deepEqual(groups.map(g=>g.label),GROUP_LABELS,'group labels');
@@ -825,7 +836,7 @@ async function checkGroupedPinCard(X){
   assert.equal(clipped,0,'nothing clipped in the pin card');
   if(X.shots){await page.locator('#pin-dialog').screenshot({path:path.join(X.shots,'pin-card-groups.png')});await page.screenshot({path:path.join(X.shots,'pin-card-groups-window.png')});}
   const hp=(await st()).hp,n=(await snapPins(page)).p.length;
-  await page.locator('#pin-chips [data-class=appearance]').click();await page.waitForTimeout(400);       // one click saves
+  await pickChip(page,'appearance');await page.waitForTimeout(400);       // one click saves
   assert.equal(await page.locator('#pin-dialog').isVisible(),false,'a change-request chip saves and closes the card');
   const cp=await lastPin(page);assert.equal((await snapPins(page)).p.length,n+1);assert.equal(cp.issue_class,'appearance');assert.equal((await st()).hp,hp+1,'one undo step');
   const mk=page.locator(`.pin-marker[data-pin=${cp.id}]`);assert.equal(await mk.evaluate(e=>e.classList.contains('g-change_request')),true,'marker has the change-request class');
@@ -893,7 +904,8 @@ async function checkKeepPinIsALock(X){
   if(qc&&!qc.part_changed&&qc.near_changed===false)X.ok(`question pin ${X.question.id} unchanged on the server, badge still hidden`);
   const changedIds=Object.entries(pc.pins).filter(([,c])=>c.part_changed||c.near_changed===true).map(([id])=>id);
   assert(changedIds.length>=1,'some pin of the packet has its part changed');
-  for(const id of changedIds)if(await X.pinLi(id).count())assert.equal(await X.pinLi(id).locator('[data-act=repin]').count(),1,`Repin on ${id}, whose part changed since the packet`);
+  // (a keep pin is a lock, not a request: it offers Release, never Repin)
+  for(const id of changedIds)if(await X.pinLi(id).count())assert.equal(await X.pinLi(id).locator('[data-act=repin]').count(),id===X.keep.id?0:1,`Repin on ${id}, whose part changed since the packet (none on the keep pin)`);
   fs.rmSync(tmp,{recursive:true,force:true});
   X.ok(`keep pin ${X.keep.id}: build ${B3} changed geometry within 5 mm, flagged first in the Revisions tab and in aad review; Repin on ${changedIds.length} changed pin(s)`);
 }
@@ -941,10 +953,10 @@ async function checkRepin(X){
   const PB=await pointOn(page,B.key)||B;await page.mouse.click(PB.x,PB.y);await page.locator('#pin-dialog').waitFor({state:'visible'});
   assert.equal(await page.locator('#pin-dialog-h').textContent(),`Repin #${old.n}`);
   assert.equal(await page.locator('#pin-note').inputValue(),old.note,'the card is prefilled with the old note');
-  assert.equal(await page.locator('#pin-chips button.on').getAttribute('data-class'),old.issue_class,'and the old class');
+  assert.equal(await page.locator('#pin-recent button.on').getAttribute('data-class'),old.issue_class,'and the old class');
   assert.equal(await page.locator('#pin-was').textContent(),`was: Weird geometry, ${old.note}`);
   await page.locator('#pin-note').fill('The boss is fine; the wall next to the slot is what is too thin');
-  await page.locator('#pin-chips [data-class=fit_clearance]').click();await page.waitForTimeout(500);   // one click saves
+  await pickChip(page,'fit_clearance');await page.waitForTimeout(500);   // one click saves
   assert.equal(await page.locator('#pin-dialog').isVisible(),false);
   const after=await snapPins(page),np=after.p.find(p=>p.id===P1.id);
   assert.equal(after.p.length,before.p.length,'no new pin: the same pin id');assert.equal(after.nx,before.nx,'no new number');
@@ -980,7 +992,7 @@ async function checkRepin(X){
   if(NF){
     const hp2=(await st()).hp;await X.pinLi(NF.id).locator('[data-act=repin]').click();await page.waitForTimeout(150);
     await page.keyboard.press('Enter');await page.locator('#pin-dialog').waitFor({state:'visible'});
-    await page.locator('#pin-chips [data-class=regression]').click();await page.waitForTimeout(400);
+    await pickChip(page,'regression');await page.waitForTimeout(400);
     const nf2=(await snapPins(page)).p.find(p=>p.id===NF.id);
     assert.deepEqual(nf2.anchor,NF.anchor,'Enter keeps the old anchor');assert.equal(nf2.attempts,NF.attempts+1);assert.equal(nf2.status,'open');
     assert.equal(nf2.issue_class,'regression');assert.equal((await st()).hp,hp2+1);
@@ -996,13 +1008,13 @@ async function checkRepin(X){
   const tb=await page.locator('#tour-out .row2').first().evaluate(r=>[...r.querySelectorAll('button')].map(b=>b.id));
   assert.deepEqual(tb.slice(-3),['tour-accept','tour-reject','tour-repin'],'Repin sits beside Accept and Reject');
   await page.locator('#tour-reject').click();await page.locator('#pin-dialog').waitFor({state:'visible'});
-  await page.locator('#pin-chips [data-class=intent_misread]').click();await page.waitForTimeout(400);
+  await pickChip(page,'intent_misread');await page.waitForTimeout(400);
   const T1=await lastPin(page);assert.equal(T1.tour_stop,'s1');assert.equal(T1.kind,'region');
   const tBefore=await snapPins(page),hp3=(await st()).hp;
   await page.locator('#tour-repin').click();await page.waitForTimeout(200);assert.equal((await X.rstate()).repin.picking,true);
   const PA=await pointOn(page,A.key);assert(PA,'part A on screen at the tour stop');
   await page.mouse.click(PA.x,PA.y);await page.locator('#pin-dialog').waitFor({state:'visible'});
-  await page.locator('#pin-chips [data-class=move]').click();await page.waitForTimeout(400);
+  await pickChip(page,'move');await page.waitForTimeout(400);
   const tAfter=await snapPins(page),T1b=tAfter.p.find(p=>p.id===T1.id);
   assert.equal(tAfter.p.length,tBefore.p.length,'the stop\'s pin keeps its id');assert.equal(T1b.kind,'point');assert.equal(T1b.anchor.part.key,A.key);
   assert.equal(T1b.attempts,1);assert.equal(T1b.history.length,1);assert.equal(T1b.history[0].kind,'region');assert.equal(T1b.issue_class,'move');
@@ -1013,7 +1025,7 @@ async function checkRepin(X){
   const n0=tAfter.p.length;await page.locator('#tour-repin').click();await page.waitForTimeout(150);
   await page.keyboard.press('Escape');await page.locator('#pin-dialog').waitFor({state:'visible'});     // Esc keeps the stop's parts
   assert.equal(await page.locator('#pin-dialog-h').textContent(),'Repin tour stop');
-  await page.locator('#pin-chips [data-class=regression]').click();await page.waitForTimeout(400);
+  await pickChip(page,'regression');await page.waitForTimeout(400);
   const s2=await snapPins(page),T2=s2.p[s2.p.length-1];
   assert.equal(s2.p.length,n0+1,'a stop without a pin gets a new one');assert.equal(T2.tour_stop,'s2');assert.equal(s2.td.s2.pin,T2.id);assert.equal(s2.td.s2.decision,'reject');
   await pause(700);validate(path.join(X.rd,'pins.json'),'pins');validate(path.join(X.rd,'tour.json'),'tour');
@@ -1481,9 +1493,10 @@ async function checkLeftovers(X){
   await page.evaluate(()=>viewer.home());await page.waitForTimeout(600);
   const PA=await pointOn(page,X.A.key);await page.locator('#modes [data-mode=pin]').click();await page.mouse.click(PA.x,PA.y);
   await page.locator('#pin-dialog').waitFor({state:'visible'});
-  const flds=await page.locator('#pin-where .fld').evaluateAll(fs=>fs.map((f,i)=>({i,t:f.textContent,lines:f.getClientRects().length})));
-  assert(flds.length>=2&&flds.slice(1).every(f=>f.lines===1),'each coordinate field stays on one line: '+JSON.stringify(flds));
-  assert.match(flds[1].t,/^local -?\d+\.\d, -?\d+\.\d, -?\d+\.\d mm$/);
+  // (r11: the compact card's location is one line, part then point or edge; the part-local point is its tooltip)
+  const wh=await page.locator('#pin-where').evaluate(e=>({h:e.getBoundingClientRect().height,t:e.title,k:e.querySelector('.kind')?.textContent}));
+  assert(wh.h<24&&/^(point|edge \d+\.\d\d mm)$/.test(wh.k),'the location stays on one line: '+JSON.stringify(wh));
+  assert.match(wh.t,/, local -?\d+\.\d, -?\d+\.\d, -?\d+\.\d mm$/);
   await page.locator('#pin-close').click();await page.locator('#modes [data-mode=select]').click();
   // Revisions rows count parts in good English
   await page.locator('#tabs [data-tab=diff]').click();await page.waitForTimeout(1500);
@@ -1491,7 +1504,7 @@ async function checkLeftovers(X){
   assert(subs.some(t=>/parts? differs? from now/.test(t)),'a Revisions row counts differing parts: '+JSON.stringify(subs));
   for(const t of subs)assert(!/\b1 parts\b|\b1 part differ\b|\b(?:[02-9]|\d\d+) parts? differs\b/.test(t),'plural agreement: '+t);
   await page.locator('#tabs [data-tab=pins]').click();
-  ok(`leftovers: card fields ${JSON.stringify(flds.map(f=>f.t))} unbroken; revisions "${subs.find(t=>/differ/.test(t))}"`);
+  ok(`leftovers: card location "${wh.k}" on one line (${wh.t}); revisions "${subs.find(t=>/differ/.test(t))}"`);
 }
 
 // stale edge pins (r8): an edge pin made on another build is re-matched against the part's current feature edges.
@@ -1737,6 +1750,11 @@ async function orbitDrag(page,box,steps=40){
   await page.mouse.up({button:'middle'});await page.keyboard.up('Shift');
 }
 async function freePort(){
+  if(process.env.AAD_TEST_PORT){                                       // a fixed port for the test's own viewers
+    const p=+process.env.AAD_TEST_PORT,net=require('node:net');
+    await new Promise((res,rej)=>{const s=net.createServer();s.once('error',()=>rej(new Error(`AAD_TEST_PORT ${p} is in use`)));s.listen(p,'127.0.0.1',()=>s.close(res));});
+    return p;
+  }
   const net=require('node:net');
   return new Promise((res,rej)=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>res(p));});s.on('error',rej);});
 }
@@ -1866,7 +1884,11 @@ const BOX=(x0,y0,z0,x1,y1,z1)=>[[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0
 // build 2 thins the side wall from 3 mm to 0.3 mm (a thin_feature warning with evidence)
 function writeClearModel(file,build=1){
   const parts={'base plate':[...BOX(-60,-40,0,60,40,6),[0.55,0.58,0.62]],'block':[...BOX(-10,-10,6,10,10,26),[0.85,0.45,0.2]],
-    'clear cover':[...BOX(-25,-25,6,25,25,46),[0.7,0.85,1.0,0.3]],'side wall':[...BOX(35,-10,6,build===2?35.3:38,10,26),[0.4,0.6,0.45]]};
+    'clear cover':[...BOX(-25,-25,6,25,25,46),[0.7,0.85,1.0,0.3]],'side wall':[...BOX(35,-10,6,build===2?35.3:38,10,26),[0.4,0.6,0.45]],
+    // r11: a part shut inside an opaque housing (hidden from every side) and a clear enclosure panel in front of it
+    'housing':[...BOX(-200,-30,0,-140,30,60),[0.15,0.15,0.17]],'inner gear':[...BOX(-180,-10,20,-160,10,40),[0.9,0.75,0.2]],
+    // r11: a 0.6 mm opaque tab floating in front of the block face (a sub-millimetre edge on another part)
+    'tiny tab':[...BOX(-6.6,-14,10,-6,-13.4,10.6),[0.3,0.3,0.32]]};
   const code=['import sys, json, numpy as np','from aad.review.glb import write_parts',
     'parts={k:(np.array(v[0],float),np.array(v[1]),v[2]) for k,v in json.loads(sys.argv[2]).items()}','write_parts(sys.argv[1], parts)'].join('\n');
   const g=spawnSync(PY,['-c',code,file,JSON.stringify(parts)],{encoding:'utf8',env:{...process.env,PYTHONPATH:REPO}});
@@ -1891,6 +1913,10 @@ async function checkClearModel(){
     await clearPartsChecks(C);
     await warningEvidenceChecks(C);
     await tourFocusChecks(C);
+    await targetChecks(C);
+    await edgePrecedenceChecks(C);
+    await honestLabelChecks(C);
+    await pinCardChecks(C);
     await staleServerChecks(C);
     assert.deepEqual(errs,[],'no page errors on the clear model');
   }finally{await ctx.close();await browser.close();srv.kill();fs.rmSync(tmp,{recursive:true,force:true});if(serr&&/Traceback/.test(serr))console.error(serr);}
@@ -1991,7 +2017,7 @@ async function warningEvidenceChecks(C){
   await page.locator('#diff-list .warnrow.on .wpin').click();
   await page.locator('#pin-dialog').waitFor({state:'visible'});
   assert.match(await page.locator('#pin-where').textContent(),/^side wall /,'the pin card is on the side wall');
-  assert.equal(await page.locator('#pin-chips button.on').getAttribute('data-class'),'printability','Printability class preselected');
+  assert.equal(await page.locator('#pin-recent button.on').getAttribute('data-class'),'printability','Printability class preselected');
   assert.match(await page.locator('#pin-note').inputValue(),/Detector thin feature: wall 0\.30 mm thick/);
   await page.locator('#pin-save').click();
   const pin=(await page.evaluate(()=>viewer.review.snapshot().p)).slice(-1)[0];
@@ -2076,12 +2102,242 @@ async function tourFocusChecks(C){
 
 // (4) stale server guard: a status.json whose start stamp differs from the stamp now shows the persistent banner with
 // the restart command; a page module the server will not serve (404) shows it too, instead of a blank page.
+// (r11 fix 1) going to a target shows it: Fit sel, double-click, a pin's fly to and the Revisions rows share one
+// routine. A target hidden from the current direction gets the clearest axis view; one hidden from every side (the
+// inner gear inside the opaque housing) fades every other part, with the "Focused on <name>" chip; Esc or the chip
+// restores the opacity exactly, Fit never fades and ends a fade, and Options can turn the fade off (remembered). A
+// pin's fly to frames its point with 40 mm around it, not the whole part.
+async function targetChecks(C){
+  const {page,ok}=C;
+  await page.keyboard.press('Escape');await page.waitForTimeout(150);
+  const gear=await keyNamed(page,'inner gear'),block=await keyNamed(page,'block'),plate=await keyNamed(page,'base plate');
+  assert(gear&&block&&plate,'synthetic parts are in the tree');
+  const opac=()=>page.evaluate(()=>viewer.meshes().map(m=>[m.material.opacity,m.material.transparent,m.material.depthWrite]));
+  const op0=await opac();
+  // from +X the opaque side wall hides the block: Fit sel takes an axis view and does not fade
+  await page.evaluate(()=>{const k=viewer.controls;k.enableDamping=false;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();k.setLookAt(400,0,16,0,0,16,false);k.update(0);viewer.commit();});
+  await page.evaluate(k=>{viewer.select(k);viewer.commit();},block);await page.locator('#fitsel').click();await page.waitForTimeout(500);
+  let s=await page.evaluate(()=>{const v=viewer.state();return {g:v.goTarget,focus:v.focus,chip:v.focusChip,target:v.target};});
+  assert(s.g&&s.g.axis&&s.g.axis!=='+X'&&s.g.seen>=0.5&&!s.g.faded,'Fit sel on the block hidden from +X takes a clear axis view: '+JSON.stringify(s.g));
+  assert.equal(s.focus,null,'nothing fades when the target is seen');assert.equal(s.chip,null,'no chip');
+  assert(s.g.ms<250,'the occlusion sample is bounded: '+s.g.ms+' ms');
+  // the inner gear is shut in the housing: every direction is blocked, so the rest fades and the chip shows
+  await page.evaluate(k=>{viewer.select(k);viewer.commit();},gear);await page.locator('#fitsel').click();await page.waitForTimeout(500);
+  s=await page.evaluate(()=>{const v=viewer.state();return {g:v.goTarget,focus:v.focus,chip:v.focusChip,hp:v.hp,target:v.target};});
+  assert(s.g.faded&&s.g.seen<0.5,'hidden from every side: the other parts fade: '+JSON.stringify(s.g));
+  assert(s.focus&&s.focus.owner==='target'&&s.focus.faded===(await page.evaluate(()=>viewer.meshes().length))-1,'every other part faded: '+JSON.stringify(s.focus));
+  assert.equal(s.chip,'Focused on inner gear. Show whole model','the chip names the target: '+s.chip);
+  assert(Math.hypot(s.target[0]+170,s.target[1],s.target[2]-30)<1,'the camera fits the gear: '+JSON.stringify(s.target));
+  const vis0=await page.evaluate(()=>viewer.state().hidden.length);assert.equal(vis0,0,'no visibility change');
+  // a click on the gear through the faded housing picks the gear
+  const [gp]=await toClient(page,[[-170,0,30]]);
+  assert.equal((await page.evaluate(([x,y])=>viewer.pickAt(x,y)?.part.key,[gp.x,gp.y])),gear,'a click reaches the gear through the faded housing');
+  // Esc restores every opacity exactly and hides the chip; the camera stays on the gear
+  await page.mouse.move(5,5);await page.keyboard.press('Escape');await page.waitForTimeout(200);
+  assert.deepEqual(await opac(),op0,'Esc restores every opacity exactly');
+  assert.equal(await page.evaluate(()=>viewer.state().focusChip),null,'chip gone');
+  // double-click on the gear row in the tree fades again; the chip click restores
+  await page.evaluate(k=>viewer.nodes.get(k).el.querySelector('.nm').dispatchEvent(new MouseEvent('dblclick',{bubbles:true})),gear);await page.waitForTimeout(500);
+  assert(await page.evaluate(()=>viewer.state().focus?.owner==='target'),'tree double-click on the hidden gear fades the rest');
+  await page.locator('#focus-chip').click();await page.waitForTimeout(150);
+  assert.deepEqual(await opac(),op0,'the chip restores the opacity');
+  // Fit never fades and ends a fade
+  await page.locator('#fitsel').click();await page.waitForTimeout(300);assert(await page.evaluate(()=>!!viewer.state().focus));
+  await page.locator('#fit').click();await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(()=>viewer.state().focus),null,'Fit ends the fade');assert.deepEqual(await opac(),op0);
+  // Options off: no fade (remembered); on again
+  await page.locator('#options').click();await page.locator('#opt-fade').uncheck();await page.keyboard.press('Escape');
+  await page.locator('#fitsel').click();await page.waitForTimeout(300);
+  s=await page.evaluate(()=>({g:viewer.state().goTarget,focus:viewer.state().focus}));
+  assert(!s.g.faded&&s.focus===null,'with the option off nothing fades');
+  assert.equal(await page.evaluate(()=>{try{return JSON.parse(localStorage.getItem('aad-viewer-options')).fadeHidden;}catch(e){return null;}}),false,'the choice is remembered');
+  await page.locator('#options').click();await page.locator('#opt-fade').check();await page.keyboard.press('Escape');
+  // a pin's fly to frames its point with 40 mm around it (the base plate is 144 mm across)
+  await page.evaluate(()=>{const k=viewer.controls;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();k.setLookAt(-38+300,-14-300,6+300,-38,-14,6,false);if(viewer.camera.isOrthographicCamera)k.zoomTo(4,false);k.update(0);viewer.commit();});
+  await page.waitForTimeout(300);
+  const [pp]=await toClient(page,[[-38,-14,6]]);
+  await page.locator('#modes [data-mode=pin]').click();await page.mouse.move(pp.x+3,pp.y+3);await page.mouse.move(pp.x,pp.y);await page.waitForTimeout(150);await page.mouse.click(pp.x,pp.y);
+  await page.locator('#pin-dialog').waitFor({state:'visible'});await page.locator('#pin-note').fill('fly to check');await page.locator('#pin-save').click();
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  const pin=(await page.evaluate(()=>viewer.review.snapshot().p)).slice(-1)[0];
+  assert.equal(pin.anchor.part.node,'base plate');
+  await page.locator('#fit').click();await page.waitForTimeout(300);
+  await page.locator(`#pin-list li[data-pin=${pin.id}] button[data-act=fly]`).click();await page.waitForTimeout(800);
+  s=await page.evaluate(()=>({g:viewer.state().goTarget,t:viewer.state().target}));
+  assert(Math.hypot(...s.t.map((v,i)=>v-pin.anchor.world[i]))<0.5,'fly to centres the pin point: '+JSON.stringify(s.t));
+  assert.equal(pin.kind,'point','a point pin: '+JSON.stringify(pin.edge&&pin.edge.length_mm));
+  assert.equal(s.g.r,40,'a point pin is framed with 40 mm around it: '+JSON.stringify(s.g));
+  ok(`going to a target: Fit sel on the block hidden from +X takes a clear axis view without a fade; the gear inside the opaque housing fades the rest (chip "Focused on inner gear. Show whole model"), a click reaches it, Esc and the chip restore opacity exactly, Fit ends the fade, Options off is remembered; a pin's fly to frames 40 mm around its point`);
+}
+// (r11 fix 2) edge snapping never hijacks a click: in Pin mode a pointer on the block face 5 px from the 0.6 mm tab
+// in front of it takes the block face (the tab's chain is under 2 mm), Cmd+click takes that nearest edge anyway; the
+// block's own edge wins within 6 px and stays until 10 px (hysteresis both ways), Shift+click there takes the face;
+// the tip always says which.
+async function edgePrecedenceChecks(C){
+  const {page,ok}=C;
+  await page.keyboard.press('Escape');await page.locator('#fit').click();
+  await frontView(page,[0,0,16],400,6);
+  const [a,b]=await toClient(page,[[0,-10,16],[1,-10,16]]);const ppm=Math.hypot(b.x-a.x,b.y-a.y);
+  assert(ppm>=4,'zoomed in enough: '+ppm.toFixed(2)+' px/mm');
+  await page.locator('#modes [data-mode=pin]').click();
+  const tip=()=>page.evaluate(()=>{const t=document.getElementById('tip');return t.style.display==='block'?t.textContent:'';});
+  const hoverAt=async(x,y)=>{await page.mouse.move(x,y,{steps:2});await page.waitForTimeout(160);return tip();};
+  const card=async()=>{await page.locator('#pin-dialog').waitFor({state:'visible'});const r={h:await page.locator('#pin-dialog-h').textContent(),where:await page.locator('#pin-where').textContent()};
+    await page.locator('#pin-close').click();await page.waitForTimeout(100);return r;};
+  // the tab's right edge (x -6), 5 px to its right on the block face
+  const [te]=await toClient(page,[[-6,-14,10.3]]),tx=te.x+5,ty=te.y;
+  assert.equal(await page.evaluate(([x,y])=>viewer.pickAt(x,y)?.part.node,[tx,ty]),'block','the spot is on the block face');
+  let t=await hoverAt(tx,ty);assert.equal(t,'block (through clear cover)','5 px from a 0.6 mm edge on another part the tip names the face: '+t);
+  await page.mouse.click(tx,ty);let c=await card();
+  assert(c.h==='New pin'&&/^block /.test(c.where),'the click takes the block face, not the tiny edge: '+JSON.stringify(c));
+  await page.keyboard.down('Meta');t=await hoverAt(tx+1,ty);assert.match(t,/^Edge 0\.60 mm on tiny tab/,'Cmd: the tip offers the nearest edge: '+t);
+  await page.mouse.click(tx+1,ty);await page.keyboard.up('Meta');c=await card();
+  assert(c.h==='New edge pin'&&/^tiny tab /.test(c.where),'Cmd+click forces the nearest edge: '+JSON.stringify(c));
+  // the block's own right edge (x 10): in at 5 px, stays at 8 px, out at 12 px, needs 6 px again
+  const [be]=await toClient(page,[[10,-10,18]]);
+  const at=async dx=>hoverAt(be.x-dx,be.y);
+  await hoverAt(be.x-30,be.y);
+  t=await at(5);assert.match(t,/^Edge 20\.0 mm on block/,'5 px from its own edge: the edge: '+t);
+  t=await at(8);assert.match(t,/^Edge 20\.0 mm on block/,'8 px: still the edge (it stays until 10 px): '+t);
+  t=await at(12);assert.equal(t,'block (through clear cover)','12 px: the face');
+  t=await at(8);assert.equal(t,'block (through clear cover)','back to 8 px: still the face (a new edge needs 6 px)');
+  t=await at(7);assert.equal(t,'block (through clear cover)','7 px: still the face');
+  t=await at(5);assert.match(t,/^Edge 20\.0 mm on block/,'5 px: the edge again');
+  await page.keyboard.down('Shift');t=await hoverAt(be.x-4,be.y);assert.equal(t,'block (through clear cover)','Shift: the tip names the face: '+t);
+  await page.mouse.click(be.x-4,be.y);await page.keyboard.up('Shift');c=await card();
+  assert(c.h==='New pin'&&/^block /.test(c.where),'Shift+click takes the face at the edge: '+JSON.stringify(c));
+  assert.match(await page.locator('#modehint').textContent(),/Shift\+click takes the face, Cmd\+click the nearest edge/,'the mode hint names the keys');
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  ok(`edge precedence: 5 px from the 0.6 mm tab edge in front of the block the tip and the click take the block face; Cmd+click takes that edge; the block's own edge enters at 5 px, stays at 8, leaves at 12, needs 6 to come back; Shift+click takes the face (${ppm.toFixed(1)} px/mm)`);
+}
+// (r11 fix 3) honest labels: (a) with the block in the scope lock, the side wall changed since the previous build but
+// carries the reviewer's open pin, so it is "Changed, outside the scope lock, pinned by you (pin #n)" in amber, not
+// collateral; without the pin it is collateral again. (b) a section plane that removes a pin's point fades the marker
+// with a scissors badge, the title and the list row say "cut away by the section". (c) a Question pin offers Answered,
+// a Keep pin Release, a Reference pin Done; none offers Not fixed; Release moves the keep pin to Resolved.
+async function honestLabelChecks(C){
+  const {page,ok}=C;
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  const block=await keyNamed(page,'block');
+  const wallPin=(await page.evaluate(()=>viewer.review.snapshot().p)).find(p=>p.status!=='resolved'&&p.anchor?.part.node==='side wall');
+  assert(wallPin,'an open pin sits on the side wall (Pin this, earlier)');
+  await page.evaluate(k=>{if(!viewer.review.inScope(k))viewer.review.toggleScope(k);},block);
+  await page.locator('#tabs [data-tab=diff]').click();
+  await page.evaluate(()=>viewer.review.runDiff('previous'));
+  await page.waitForFunction(()=>viewer.review.state().diff?.kind==='build',null,{timeout:60000});
+  let d=await page.evaluate(()=>viewer.review.state().diff);
+  assert.deepEqual(d.collateral,[],'the pinned side wall is not collateral: '+JSON.stringify(d));
+  assert.deepEqual(d.pinnedOutside,[{name:'side wall',pins:[wallPin.n]}]);
+  assert.equal(await page.locator('#diff-out .banner:not(.ok):not(.pinned):not(.keep)').count(),0,'no red COLLATERAL banner');
+  assert.match(await page.locator('#diff-out .banner.pinned').textContent(),new RegExp(`^Changed, outside the scope lock, pinned by you \\(pin #${wallPin.n}\\)side wall`),'the amber group names the pin');
+  assert.equal(await page.locator('#diff-out .banner.pinned').evaluate(e=>getComputedStyle(e).borderTopColor),'rgb(227, 179, 65)','amber, not red');
+  assert.match(await page.locator('#diff-list li[data-part="side wall"] .chip.pinnedout').textContent(),new RegExp(`pinned by you, pin #${wallPin.n}`));
+  // the same diff with that pin resolved: collateral again
+  const keep=await page.evaluate(()=>viewer.review.snapshot());
+  await page.evaluate(id=>{const S=viewer.review.snapshot();S.p.find(p=>p.id===id).status='resolved';viewer.review.restore(S);},wallPin.id);
+  await page.waitForTimeout(600);await page.evaluate(()=>viewer.review.runDiff('previous'));await page.waitForTimeout(300);
+  d=await page.evaluate(()=>viewer.review.state().diff);
+  assert.deepEqual(d.collateral,['side wall'],'with the pin resolved the change is collateral');
+  assert.match(await page.locator('#diff-out .banner').first().textContent(),/^COLLATERAL: 1 part changed outside the scope lock/);
+  await page.evaluate(S=>viewer.review.restore(S),keep);await page.waitForTimeout(600);
+  await page.evaluate(k=>{if(viewer.review.inScope(k))viewer.review.toggleScope(k);},block);
+  // (b) the section plane Z at 10 mm removes the block pin's point (z 16)
+  await page.locator('#tabs [data-tab=pins]').click();await page.locator('#fit').click();
+  const blockPin=(await page.evaluate(()=>viewer.review.snapshot().p)).find(p=>p.status!=='resolved'&&p.anchor?.part.node==='block');
+  await page.evaluate(()=>{const on=document.getElementById('clipZon');if(!on.checked)on.click();const s=document.getElementById('clipZ');s.value='10';s.dispatchEvent(new Event('input',{bubbles:true}));s.dispatchEvent(new Event('change',{bubbles:true}));});
+  await page.waitForFunction(id=>document.querySelector(`.pin-marker[data-pin="${id}"]`)?.classList.contains('cut'),blockPin.id,{timeout:5000});
+  const mk=await page.evaluate(id=>{const e=document.querySelector(`.pin-marker[data-pin="${id}"]`);return {title:e.title,op:+getComputedStyle(e).opacity,badge:getComputedStyle(e.querySelector('.cutb')).display};},blockPin.id);
+  assert(/cut away by the section/.test(mk.title)&&mk.op<0.6&&mk.badge==='block','the cut pin is faded with a badge and says so: '+JSON.stringify(mk));
+  assert(await page.locator(`#pin-list li[data-pin="${blockPin.id}"] .chip.cutaway`).isVisible(),'its list row says cut away by the section');
+  const platePin=(await page.evaluate(()=>viewer.review.snapshot().p)).find(p=>p.status!=='resolved'&&p.anchor?.part.node==='base plate');
+  assert.equal(await page.locator(`.pin-marker[data-pin="${platePin.id}"]`).evaluate(e=>e.classList.contains('cut')),false,'the base plate pin (z 6) below the plane is not cut');
+  await page.evaluate(()=>document.getElementById('clipZon').click());
+  await page.waitForFunction(id=>!document.querySelector(`.pin-marker[data-pin="${id}"]`).classList.contains('cut'),blockPin.id,{timeout:5000});
+  assert.equal(await page.locator(`#pin-list li[data-pin="${blockPin.id}"] .chip.cutaway`).isVisible(),false,'section off: solid again');
+  // (c) note pins: Question, Keep as is, Reference
+  await page.evaluate(()=>{const k=viewer.controls;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();k.setLookAt(300,-300,300,0,0,6,false);if(viewer.camera.isOrthographicCamera)k.zoomTo(3,false);k.update(0);viewer.commit();});
+  await page.waitForTimeout(300);
+  const made={};
+  for(const [cls,x] of [['question',-45],['keep',-30],['reference',40]]){
+    const [q]=await toClient(page,[[x,-25,6]]);
+    await page.locator('#modes [data-mode=pin]').click();await page.mouse.move(q.x+2,q.y+2);await page.mouse.move(q.x,q.y);await page.waitForTimeout(150);await page.mouse.click(q.x,q.y,{modifiers:['Shift']});
+    await page.locator('#pin-dialog').waitFor({state:'visible'});
+    await pickChip(page,cls);
+    made[cls]=(await page.evaluate(()=>viewer.review.snapshot().p)).slice(-1)[0];assert.equal(made[cls].issue_class,cls);
+  }
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  const acts=id=>page.evaluate(id=>[...document.querySelectorAll(`#pin-list li[data-pin="${id}"] .acts .pa button`)].map(b=>b.textContent.trim()),id);
+  assert.deepEqual(await acts(made.question.id),['Answered'],'a question: Answered, no Not fixed');
+  assert.deepEqual(await acts(made.keep.id),['Release'],'a keep pin: Release, no Not fixed or Repin');
+  assert.deepEqual(await acts(made.reference.id),['Done'],'a reference: Done');
+  assert.deepEqual(await acts(wallPin.id),['Resolve','Not fixed'],'a problem pin keeps Resolve and Not fixed');
+  await page.locator(`#pin-list li[data-pin="${made.keep.id}"] button[data-act=resolve]`).click();
+  assert.equal((await page.evaluate(()=>viewer.review.snapshot().p)).find(p=>p.id===made.keep.id).status,'resolved','Release moves it to Resolved (status stays resolved)');
+  assert.match(await page.locator('#toast').textContent(),/released/);
+  ok(`honest labels: the side wall with pin #${wallPin.n} is "Changed, outside the scope lock, pinned by you" in amber (collateral again once resolved); the section-cut pin #${blockPin.n} is faded with a scissors badge, title and row say cut away; Question Answered, Keep Release, Reference Done, no Not fixed`);
+}
+// (r11 fix 4) a smaller pin card: collapsed about 300 x 220 px with ONE row of the 6 most recently used reasons, More
+// reasons for the grouped list, the hovered chip's meaning, a one-line note that grows, severity chips, Save; the
+// recently used order is remembered. With the view under 700 px wide the card docks at the top of the right panel
+// with a leader from the pin to the panel edge; the mode hint is never covered.
+async function pinCardChecks(C){
+  const {page,ok}=C;
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();await page.locator('#tabs [data-tab=pins]').click();
+  const iso=()=>page.evaluate(()=>{const k=viewer.controls;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();k.setLookAt(300,-300,300,0,0,6,false);if(viewer.camera.isOrthographicCamera)k.zoomTo(3,false);k.update(0);viewer.commit();});
+  const openCard=async(narrow=false)=>{let q;
+    if(narrow){await page.locator('#fit').click();await page.waitForTimeout(400);q=await pointOn(page,await keyNamed(page,'base plate'));}
+    else{await iso();await page.waitForTimeout(300);[q]=await toClient(page,[[-40,-28,6]]);}
+    await page.locator('#modes [data-mode=pin]').click();await page.mouse.move(q.x+2,q.y+2);await page.mouse.move(q.x,q.y);await page.waitForTimeout(150);
+    await page.mouse.click(q.x,q.y,{modifiers:['Shift']});await page.locator('#pin-dialog').waitFor({state:'visible'});await page.waitForTimeout(250);
+    return page.evaluate(()=>viewer.review.state().editor);};
+  let e=await openCard();
+  if(process.env.CARD_SHOT)await page.locator('#pin-dialog').screenshot({path:process.env.CARD_SHOT});
+  assert(!e.docked&&e.card.w<=320&&e.card.h<=235,'collapsed floating card about 300 x 220: '+JSON.stringify(e.card)+' '+JSON.stringify(await page.evaluate(()=>[...document.getElementById('pin-dialog').children].map(c=>[c.id||c.className,Math.round(c.getBoundingClientRect().height)]))));
+  assert.equal(e.recent.length,6,'one row of 6 recently used reasons');assert.equal(e.hintCovered,false,'the mode hint is not covered');
+  const rowTops=await page.locator('#pin-recent button').evaluateAll(bs=>new Set(bs.map(b=>Math.round(b.getBoundingClientRect().top))).size);
+  assert(rowTops<=3,'the reasons row (with More reasons at its end) stays compact: '+rowTops+' line(s)');
+  assert.equal(await page.locator('#pin-chips').isVisible(),false,'the grouped list waits behind More reasons');
+  // the meaning follows the hovered chip, else the selected one
+  const sel=await page.locator('#pin-recent button.on').getAttribute('title');assert.equal(await page.locator('#pin-meaning').textContent(),sel);
+  const other=page.locator('#pin-recent button:not(.on)').first();await other.hover();
+  assert.equal(await page.locator('#pin-meaning').textContent(),await other.getAttribute('title'),'hovered chip meaning');
+  await page.locator('#pin-note').hover();assert.equal(await page.locator('#pin-meaning').textContent(),sel,'back to the selected meaning');
+  // More reasons expands the full list; the note grows when typed in
+  await page.locator('#pin-more').click();assert(await page.locator('#pin-chips .cgroup').first().isVisible(),'More reasons shows the groups');
+  const h1=(await page.evaluate(()=>viewer.review.state().editor)).card.h;assert(h1>e.card.h+60,'the card grows with the list');
+  await page.locator('#pin-more').click();
+  const nh0=await page.locator('#pin-note').evaluate(t=>t.offsetHeight);assert(nh0<=34,'one-line note: '+nh0);
+  await page.locator('#pin-note').fill('line one\nline two\nline three');await page.locator('#pin-note').dispatchEvent('input');
+  assert((await page.locator('#pin-note').evaluate(t=>t.offsetHeight))>nh0+20,'the note grows with its text');
+  // severity chips and one click on a chip saves; the order is remembered
+  await page.locator('#pin-sev [data-sev=high]').click();
+  const last=e.recent[e.recent.length-1];await page.locator(`#pin-recent [data-class=${last}]`).click();await page.waitForTimeout(300);
+  assert.equal(await page.locator('#pin-dialog').isVisible(),false,'one click on a chip saves');
+  const pin=(await page.evaluate(()=>viewer.review.snapshot().p)).slice(-1)[0];assert(pin.severity==='high'&&pin.issue_class===last&&/line three/.test(pin.note));
+  await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});await page.waitForTimeout(600);
+  e=await openCard();assert.equal(e.recent[0],last,'the most recently used reason leads the row after a reload');
+  await page.locator('#pin-close').click();
+  // narrow view: the card docks at the top of the right panel, with the leader to the panel edge
+  const vp=page.viewportSize();await page.setViewportSize({width:1000,height:800});await page.waitForTimeout(500);
+  e=await openCard(true);
+  const pr=await page.locator('#panel').boundingBox(),vw=(await page.locator('#view').boundingBox()).width;
+  assert(vw<700&&e.docked,`docked when the view is ${vw} px wide`);
+  assert(e.card.x>=pr.x-1&&e.card.x+e.card.w<=pr.x+pr.width+1&&e.card.y>=pr.y,'the docked card sits in the right panel: '+JSON.stringify({card:e.card,pr}));
+  assert.equal(e.hintCovered,false,'the mode hint is not covered');
+  const ld=await page.evaluate(()=>{const l=document.getElementById('pin-leader'),v=document.getElementById('view');return {on:document.getElementById('overlay').classList.contains('leader'),x2:+l.getAttribute('x2'),w:v.clientWidth};});
+  assert(ld.on&&Math.abs(ld.x2-(ld.w-1))<1.5,'the leader runs from the pin to the panel edge: '+JSON.stringify(ld));
+  await page.locator(`#pin-recent [data-class=${e.recent[0]}]`).click();await page.waitForTimeout(300);
+  assert.equal(await page.locator('#pin-dialog').isVisible(),false,'a docked chip saves too');
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  await page.setViewportSize(vp);await page.waitForTimeout(400);
+  ok(`pin card: collapsed ${Math.round(e.card.w)} px docked / about 300 x ${Math.round(h1)} px with More reasons open; one row of 6 recent reasons, hovered meaning, growing note, severity chips, one-click save, recent order kept over a reload; docked in the right panel with the leader to its edge when the view is ${Math.round(vw)} px wide; the mode hint never covered`);
+}
 async function staleServerChecks(C){
   const {page,ok}=C;
   const st=await page.evaluate(async()=>(await fetch('status.json')).json());
   assert(st.page_stamp&&st.page_stamp===st.page_stamp_now,'a fresh server reports equal stamps');
   assert.equal(await page.locator('#stale-banner').isVisible(),false,'no banner on a fresh server');
-  await page.route('**/status.json*',async r=>{const res=await r.fetch();const j=await res.json();j.page_stamp_now='0000000000000000';await r.fulfill({response:res,json:j});});
+  await page.route('**/status.json*',async r=>{try{const res=await r.fetch();const j=await res.json();j.page_stamp_now='0000000000000000';await r.fulfill({response:res,json:j});}catch(e){}});   // a reload may abort a polled request mid-route
   await page.reload();await page.locator('#stale-banner').waitFor({state:'visible',timeout:20000});
   const txt=await page.locator('#stale-banner').textContent();
   assert.match(txt,/This viewer's files changed on disk since its server started\. Restart the viewer to finish updating\./);

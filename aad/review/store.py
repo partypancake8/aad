@@ -240,6 +240,28 @@ class Store:
             return [p for p in ps if p["status"] in OPEN]
         return ps
 
+    def pinned_parts(self, packet=None):
+        """{node name: [pin numbers]} of the reviewer's pins that ask for a change there: the pins open now, plus,
+        for a diff against the build packet `packet` reviewed, the pins that were open when it was sent (one resolved
+        since still asked for its change). A part that carries one is not collateral when it changes outside the
+        scope lock."""
+        pins = list(self.pins())
+        if packet:
+            try:
+                with open(self.path("packets", os.path.basename(packet), "packet.json")) as fh:
+                    pins += json.load(fh).get("pins") or []
+            except (OSError, ValueError):
+                pass
+        out = {}
+        for p in pins:
+            if p.get("status") not in OPEN:
+                continue
+            nodes = [p["anchor"]["part"]["node"]] if p.get("anchor") else [x["node"] for x in p.get("parts") or []]
+            for n in nodes:
+                if n and p.get("n") is not None and p["n"] not in out.setdefault(n, []):
+                    out[n].append(p["n"])
+        return {k: sorted(v) for k, v in out.items()}
+
     def replace_pins(self, pins, build=None):
         """The viewer's full pin list (its undo history owns them): validated, numbered, events logged."""
         with _lock:

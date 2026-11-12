@@ -34,7 +34,8 @@ vendored. It reads any GLB (and STL or PLY), runs on 127.0.0.1 and makes no netw
   model with the build your last packet was sent against, however many builds came in between, and lists the
   parts that changed. Click any earlier revision to see its geometry over the current model as a green
   hologram, or hold `\` to flick between old and new. Any part that changed outside the scope lock is listed
-  first as collateral.
+  first as collateral, unless one of your open pins sits on it: then your pin asked for that change, and the part
+  is listed apart as "pinned by you" (`pinned_outside_scope` in `aad review`).
 - **Mesh checks.** The comparison warns about new loose shells, sliver triangles, walls that got thinner than
   0.5 mm, a triangle count that doubled or halved, and parts that no longer touch anything.
 - **A change tour.** The agent writes `tour.json`: an ordered list of what it changed and why. The viewer flies
@@ -250,13 +251,22 @@ Edge pins made on an earlier build are matched against the current edges of thei
 the pin's card says so, the selected pin draws the old edge thin and dashed as "edge as pinned", and
 `aad review` reports `edge_changed`. Pin markers that would overlap fan out with leaders to their points, and a
 pin behind other geometry keeps its number readable with a dimmed fill and a dashed ring (Options: Dim pins
-behind geometry).
+behind geometry). A pin whose point a section plane cuts away draws faded with a scissors badge.
+
+Going to something (Fit sel, a double-click, a pin's fly-to, a detector warning, a changed part in Revisions)
+always shows it: when other parts hide it from the current direction the clearest axis view is taken, and when
+it is hidden from every side the rest of the model fades until Esc or the "Show whole model" chip (Options: Fade
+other parts when the target is hidden). In Pin and Measure modes a click takes the face under the pointer unless
+the pointer is on an edge of that part; Shift+click always takes the face, Cmd+click the nearest edge. The pin
+card is small (the 6 reasons you used last, More reasons for the rest) and docks in the right panel when the
+view is narrow.
 
 | Key | |
 |---|---|
 | V, P, G, M, S | Select, Pin, Region, Measure, Scope |
 | H | show or hide the pins in the view (markers, pinned edges, repin trails, attached measurements) |
 | Shift+H, F | Home, fit selection |
+| Shift+click, Cmd+click | in Pin and Measure: take the face, take the nearest edge |
 | `\` (hold) | show the selected old revision solid in place of the current model |
 | Delete | remove the measurement under the pointer |
 | `,` and `.` | collapse or bring back the left and right panel (`[` and `]` stay with Move) |

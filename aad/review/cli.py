@@ -155,12 +155,16 @@ def format_status(s):
     d = s.get("diff")
     if d:
         su = d["summary"]
+        po = d.get("pinned_outside_scope") or []
         out.append(f"latest diff against {d['against']}: {su['changed']} changed, {su['moved']} moved, "
-                   f"{su['added']} added, {su['removed']} removed; {len(d['collateral'])} collateral")
+                   f"{su['added']} added, {su['removed']} removed; {len(d['collateral'])} collateral"
+                   + (f", {len(po)} changed outside the scope lock on parts you pinned" if po else ""))
         if bl and d.get("against_build") != bl["build"]:
             out.append("  (not against the diff baseline above; run `aad review diff` for it)")
         for c in d["collateral"][:12]:
             out.append(f"  COLLATERAL {c}")
+        for c in po[:12]:
+            out.append(f"  CHANGED OUTSIDE THE SCOPE LOCK, PINNED BY YOU ({D.pins_text([c])}): {c['name']}")
         for w in d["warnings"][:12]:
             out.append(f"  warning {w['kind']}{' (mesh hint)' if w.get('hint') else ''} {w['part']}: {w['message']}")
     else:
@@ -226,7 +230,8 @@ def cmd_diff(a):
         used = (f"baseline: {a_label}, build {a_build}" + (f", packet {packet}" if packet else "")
                 + f" ({', '.join(a_paths)})")
     doc = D.diff(a_paths, b_paths, scope=scope, a_label=a_label, b_label=b_label, a_id=a_id, a_build=a_build,
-                 b_build=b_build, thin_mm=a.thin, a_kind=kind, a_packet=packet)
+                 b_build=b_build, thin_mm=a.thin, a_kind=kind, a_packet=packet,
+                 pinned=st.pinned_parts(packet if kind == "reviewed" else None) if st and scope else None)
     if st and a.save:
         st.save_diff(doc)
 

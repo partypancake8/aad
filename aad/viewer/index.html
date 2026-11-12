@@ -119,7 +119,7 @@
 <div id="split-r" class="split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the right panel" aria-valuemin="300" aria-valuemax="720"
   title="Drag to resize the right panel; Left and Right arrows move it; double-click resets"><button class="fold" title="Hide the right panel (.)" aria-label="Hide the right panel"><i class="ic i-chevron-right"></i></button></div>
 <button id="rail-r" class="rail" title="Show the right panel (.)" aria-label="Show the right panel"><i class="ic i-chevron-left"></i></button>
-<main id="view"><canvas id="c"></canvas><div id="camnote" hidden><span id="camnote-t"></span></div><div id="tip"></div><div id="large-note" hidden role="status"><span id="large-note-t"></span><button id="large-note-x" title="Dismiss" aria-label="Dismiss"><i class="ic i-x"></i></button></div><div id="prep" hidden role="status"><span id="prep-t"></span><span class="prep-track"><span id="prep-bar"></span></span></div><div id="modehint" hidden></div><div id="rect" hidden></div><div id="triad-label">X red, Y green, Z blue</div>
+<main id="view"><canvas id="c"></canvas><div id="camnote" hidden><span id="camnote-t"></span></div><div id="tip"></div><div id="large-note" hidden role="status"><span id="large-note-t"></span><button id="large-note-x" title="Dismiss" aria-label="Dismiss"><i class="ic i-x"></i></button></div><div id="prep" hidden role="status"><span id="prep-t"></span><span class="prep-track"><span id="prep-bar"></span></span></div><div id="modehint" hidden></div><div id="focus-chip" role="button" tabindex="0" title="Show the whole model again (Esc)" hidden><i class="ic i-focus-2"></i><span>Focused on <b id="focus-chip-name"></b>.</span> <span class="lk">Show whole model</span></div><div id="rect" hidden></div><div id="triad-label">X red, Y green, Z blue</div>
 <div id="cube-nav" role="toolbar" aria-label="View cube">
   <button id="cube-home" title="Home view (Shift+H)" aria-label="Home view"><i class="ic i-home"></i></button>
   <button id="cube-roll-ccw" title="Rotate the view 90 degrees counter-clockwise" aria-label="Rotate the view counter-clockwise"><i class="ic i-rotate"></i></button>
@@ -134,15 +134,12 @@
     <div class="dlgh" id="pin-grip" title="Drag to move"><span id="pin-dialog-h">New pin</span><button id="pin-close" title="Close without saving (Esc)" aria-label="Close"><i class="ic i-x"></i></button></div>
     <div class="mono" id="pin-where"></div>
     <div id="pin-was" class="was" hidden></div>
-    <div class="lab">Issue <span class="muted">one click saves the pin</span></div>
-    <div id="pin-chips" role="group" aria-label="Issue class"></div>
+    <div id="pin-recent" role="group" aria-label="Reason, recently used first; one click saves the pin"><button id="pin-more" type="button" aria-expanded="false" aria-controls="pin-chips" title="Every reason, grouped"><i class="ic i-chevron-right"></i>More reasons</button></div>
+    <div id="pin-chips" role="group" aria-label="Every reason; one click saves the pin" hidden></div>
     <p id="pin-meaning" class="hint"></p>
-    <div class="row2 notehead"><label for="pin-note">Note <span class="muted">optional</span></label><span class="grow"></span>
-      <label for="pin-severity">Severity</label><select id="pin-severity"><option value="low">low</option><option value="medium" selected>medium</option><option value="high">high</option></select>
-    </div>
-    <textarea id="pin-note" rows="2" placeholder="Optional"></textarea>
+    <textarea id="pin-note" rows="1" placeholder="Note, optional" aria-label="Note, optional"></textarea>
     <label id="pin-measure-row" hidden><input type="checkbox" id="pin-measure" checked> Attach the last measurement</label>
-    <div class="row2 end"><button id="pin-cancel">Cancel</button><button id="pin-save" class="primary"><i class="ic i-check"></i>Save pin</button></div>
+    <div class="pin-foot"><div id="pin-sev" role="radiogroup" aria-label="Severity"><button type="button" data-sev="low" role="radio">low</button><button type="button" data-sev="medium" role="radio">medium</button><button type="button" data-sev="high" role="radio">high</button></div><span class="grow"></span><button id="pin-save" class="primary"><i class="ic i-check"></i>Save</button></div>
 </div></main>
 <aside id="panel" hidden>
   <div id="tabs" role="tablist">
@@ -222,6 +219,7 @@
   <label><input type="checkbox" id="opt-edges"> Feature edges</label>
   <label id="opt-large-row" title="Over 2.5 million triangles the Revisions hologram draws crease edges only (no curved-surface silhouettes) and builds them in the background"><input type="checkbox" id="opt-large" checked> Large model mode <span class="muted">automatic over 2.5 M triangles</span></label>
   <label id="opt-through-row" title="A click, hover or right-click on a clear part (glass, acrylic, a see-through cover) goes to the opaque part behind it; hold Alt to pick the clear part itself"><input type="checkbox" id="opt-through" checked> Pick through clear parts <span class="muted">Alt picks the clear part</span></label>
+  <label id="opt-fade-row" title="Going to a target (Fit sel, double-click, a pin, a detector warning, a changed part) that other parts still hide from every side fades the other parts until Esc"><input type="checkbox" id="opt-fade" checked> Fade other parts when the target is hidden</label>
   <label id="opt-dim-row" title="Pins whose point is behind other geometry from this view draw with a dimmed fill and a dashed ring" hidden><input type="checkbox" id="opt-dim-occluded" checked> Dim pins behind geometry</label>
 </div>
 <div id="part-info" role="dialog" aria-modal="false" aria-labelledby="part-info-h" hidden>

@@ -324,6 +324,50 @@ def test_cli_status_resolve_diff_template(tmp_path):
     assert "changed  bracket" in txt and "thin_feature" in txt
 
 
+def test_pinned_parts_outside_the_scope_are_not_collateral(tmp_path):
+    # the reviewer's own open pin sits on the base plate: its change is asked for, so it is listed apart, not collateral
+    doc = D.diff([GOOD], [BAD], scope=["bracket"], pinned={"base_plate": [7, 3]})
+    validate(doc, "diff")
+    r = rows(doc)
+    assert doc["collateral"] == [] and doc["summary"]["collateral"] == 0
+    assert doc["pinned_outside_scope"] == [dict(name="base_plate", pins=[3, 7])]
+    assert doc["summary"]["pinned_outside_scope"] == 1
+    assert not r["base_plate"]["collateral"] and r["base_plate"]["pinned_outside_scope"] and r["base_plate"]["pins"] == [3, 7]
+    assert "pinned_outside_scope" not in r["bracket"]                  # in scope: nothing to say
+    assert "PINNED BY YOU, outside the scope (pins #3, #7) changed  base_plate" in D.format_text(doc)
+    assert "0 COLLATERAL change(s) outside it; 1 changed outside it on parts you pinned (pins #3, #7)" in D.format_text(doc)
+    sm = D.summary(doc)
+    assert sm["collateral"] == [] and sm["pinned_outside_scope"] == [dict(name="base_plate", pins=[3, 7])]
+    # store: the pins open now, plus with a packet the pins open when it was sent (resolved ones never count)
+    st = Store(tmp_path)
+    plate = dict(key="m > base_plate", node="base_plate", component="base_plate", file=0, path=["m", "base_plate"])
+    st.replace_pins([pin(1), pin(2, anchor=dict(part=plate, local=[0, 0, 0], normal_local=[0, 0, 1], world=[0, 0, 0],
+                                              normal_world=[0, 0, 1])), pin(3, status="resolved")])
+    assert st.pinned_parts() == {"bracket": [1], "base_plate": [2]}
+    pk, _ = P.write(st, dict(model=dict(name="bracket_demo", files=[BAD])))
+    st.replace_pins(st.pins() + [pin(4, kind="region", anchor=None, parts=[plate])])
+    assert st.pinned_parts(pk["id"]) == {"bracket": [1], "base_plate": [2, 4]}
+    assert st.pinned_parts() == {"bracket": [1], "base_plate": [2, 4]}
+    st.replace_pins([dict(q, status="resolved") if q["n"] == 2 else q for q in st.pins()])
+    assert st.pinned_parts() == {"bracket": [1], "base_plate": [4]}
+    assert st.pinned_parts(pk["id"]) == {"bracket": [1], "base_plate": [2, 4]}, "open when the packet went"
+    st.replace_pins([dict(q, status="open") if q["n"] == 2 else q for q in st.pins()])
+    # aad review: diff and status text and JSON carry the split
+    st.set_current("bracket_demo", [BAD], build_id([BAD]), ["bracket", "base_plate"])
+    st.set_scope([dict(key="k", node="bracket")])
+    d = json.loads(cli("diff", GOOD, BAD, "--project", str(tmp_path), "--json", "--save"))
+    assert d["collateral"] == [] and d["pinned_outside_scope"] == [dict(name="base_plate", pins=[2, 4])]
+    s = json.loads(cli("--project", str(tmp_path), "--json"))
+    assert s["diff"]["collateral"] == [] and s["diff"]["pinned_outside_scope"] == [dict(name="base_plate", pins=[2, 4])]
+    txt = cli("--project", str(tmp_path))
+    assert "0 collateral, 1 changed outside the scope lock on parts you pinned" in txt
+    assert "CHANGED OUTSIDE THE SCOPE LOCK, PINNED BY YOU (pins #2, #4): base_plate" in txt and "COLLATERAL base_plate" not in txt
+    # without the pin it is collateral again
+    st.replace_pins([pin(1)])
+    d = json.loads(cli("diff", GOOD, BAD, "--project", str(tmp_path), "--json"))
+    assert d["collateral"] == ["base_plate"] and d["pinned_outside_scope"] == []
+
+
 def test_empty_note_pin_takes_the_class_meaning_as_its_reason(tmp_path):
     classes = json.load(open(os.path.join(ROOT, "aad", "review", "issue_classes.json")))["classes"]
     assert all(c.get("meaning", "").strip().endswith(".") for c in classes), "every class has a one-sentence meaning"
