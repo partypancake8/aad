@@ -1,4 +1,4 @@
-"""aad command line: view, review and demo.
+"""aad command line: view, review, demo and agent.
 
   aad view <model.glb | dir | versions.json> [--project DIR] [--port N] [--versions FILE] [--no-open]
   aad review [--project DIR] [--json]          open pins, scope lock, diff baseline, latest diff, camera, packets
@@ -6,6 +6,8 @@
   aad review resolve <pin>                     mark a pin resolved
   aad review tour-template                     an empty tour.json for the current build
   aad demo [DIR] [--port N] [--no-open]        copy the bracket demo to DIR (default: a temp dir) and serve it
+  aad agent install [--claude] [--codex]       install the /aad skill that orients Claude Code or Codex on aad
+  aad agent print [--claude | --codex]         print that skill
 """
 import argparse
 import os
@@ -31,6 +33,11 @@ def cmd_view(a):
 def cmd_review(a):
     from .review import cli
     return cli.run(a)
+
+
+def cmd_agent(a):
+    from . import agents
+    return agents.run(a)
 
 
 def copy_demo(dest):
@@ -75,6 +82,9 @@ def main(argv=None):
     p.add_argument("--port", type=int, help=f"port on 127.0.0.1 (default {DEFAULT_PORT})")
     p.add_argument("--no-open", action="store_true", help="do not open a browser tab")
     p.set_defaults(fn=cmd_demo)
+    from . import agents
+    p = agents.add_args(sub.add_parser("agent", help="the /aad skill for Claude Code and Codex (install, print)"))
+    p.set_defaults(fn=cmd_agent)
     a = ap.parse_args(argv)
     return a.fn(a)
 

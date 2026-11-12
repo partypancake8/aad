@@ -114,6 +114,23 @@ restore the revision where it was right without undoing later requests; after th
 explain any collateral; write a tour; never resolve or delete the reviewer's pins; never loosen a check to make
 a build pass.
 
+### Slash command
+
+`aad agent install` installs a skill named `aad` for Claude Code and Codex. It orients a fresh agent on aad:
+what it is, the loop, the vocabulary, every command, how to read a pin from the JSON and the ten rules. It
+does not start any work; after loading it the agent waits for you to ask.
+
+```
+aad agent install                  # both tools, user level (~/.claude/skills/aad/, ~/.codex/skills/aad/)
+aad agent install --project .      # this project only (.claude/skills/aad/, .agents/skills/aad/)
+```
+
+- Claude Code: `/aad`. Claude also loads it on its own when you mention pins or paste a packet prompt.
+- Codex: `$aad`, or pick `aad` from `/skills`.
+
+The installed file ends with an empty "Local notes" section for machine-specific notes (your launchers, your
+ports). Reinstalling keeps it, and never replaces a different file without `--force`.
+
 ## Review files
 
 Review state lives in the CAD project, in `.cadreview/`, as plain JSON that both sides read and write:

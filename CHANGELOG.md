@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `aad agent install` and `aad agent print`: an `aad` skill for Claude Code (`/aad`) and Codex (`$aad`) that
+  orients a fresh agent on aad (the loop, vocabulary, commands, reading a pin, the ten rules) without starting
+  any work. User, project or any directory; never replaces a different file without `--force`; keeps local
+  notes on reinstall.
+- The packet prompt ends with "If your agent has the /aad skill, load it first."
 - The viewer server refuses requests for any Host other than 127.0.0.1, localhost or [::1] on its port, and
   writes that are not same-origin JSON; responses carry `nosniff` and a same-origin resource policy.
 - Revisions tab: "Stored builds to keep" (remembered in the browser); the hologram draws feature edges and

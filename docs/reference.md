@@ -47,6 +47,24 @@ and the review files on disk.
 Copies the bracket demo to DIR (default: a new temp directory), locks the scope to `bracket`, and serves the
 planted bad build with the good build as a version to compare against.
 
+### aad agent
+
+    aad agent install [--claude] [--codex] [--user | --project DIR | --dir DIR] [--force]
+    aad agent print [--claude | --codex]
+
+- Installs the `aad` skill, which orients a coding agent on aad (the loop, the vocabulary, every command, how
+  to read a pin, the ten rules) and then waits for the user. Claude Code runs it as `/aad`; Codex as `$aad` or
+  from `/skills`. With neither `--claude` nor `--codex` it installs both.
+- `--user` (default): `~/.claude/skills/aad/SKILL.md` (or under `CLAUDE_CONFIG_DIR`) and
+  `~/.codex/skills/aad/SKILL.md` (or under `CODEX_HOME`).
+- `--project DIR`: `DIR/.claude/skills/aad/SKILL.md` and `DIR/.agents/skills/aad/SKILL.md`, the project-level
+  skill folders each tool reads. Commit them to share the skill with the project.
+- `--dir DIR`: `DIR/claude/aad/SKILL.md` and `DIR/codex/aad/SKILL.md`, for inspection.
+- An existing file with the same text is left alone. A different one is kept unless `--force`. Text between
+  the `aad:local-notes` markers at the end of an installed file is kept on every reinstall.
+- `aad agent print` writes the Claude Code version (or `--codex`) to stdout. Both share one body,
+  `aad/agents/body.md`, under a frontmatter per tool.
+
 ## Optional viewer inputs
 
 All of these are optional. Without them the viewer builds a tree from the files and the GLB node names, and
