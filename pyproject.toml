@@ -36,7 +36,7 @@ include = ["aad*"]
 
 [tool.setuptools.package-data]
 aad = [
-    "viewer/*.html", "viewer/*.js", "viewer/*.css", "viewer/vendor/**/*",
+    "viewer/*.html", "viewer/*.js", "viewer/*.css", "viewer/*.svg", "viewer/*.png", "viewer/vendor/**/*",
     "review/*.json", "review/schemas/*.json", "agents/*.md",
     "examples/bracket_demo/*.json", "examples/bracket_demo/*.py", "examples/bracket_demo/*/*.glb",
 ]

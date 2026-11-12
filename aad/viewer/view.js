@@ -31,6 +31,8 @@ function setViewerTitle(title){
     const name=document.createElement('span');name.className='tname';name.textContent=match[2];
     el.append(badge,name);
   }else{const name=document.createElement('span');name.className='tname';name.textContent=title;el.append(name);}
+  const icon=$('favicon');                          // tint the tab icon like the DEV or PROD badge
+  if(icon)icon.setAttribute('href',match?'favicon-'+match[1].toLowerCase()+'.svg':'favicon.svg');
   el.title=title;                                  // the name may be cut short on a narrow toolbar
   document.title=title+' viewer';
 }

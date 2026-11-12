@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- aad favicon: the Tabler icons 3.35.0 "cube" glyph (MIT, see vendor/LICENSES.txt), path data unchanged -->
+  <style>
+    .tile{fill:#ffd43b;stroke:#ffd43b} .ink{stroke:#08111c}
+    @media (prefers-color-scheme: dark){.tile{fill:#ffd43b;stroke:#ffd43b} .ink{stroke:#08111c}}
+  </style>
+  <rect class="tile" x="0.75" y="0.75" width="30.5" height="30.5" rx="7" stroke-width="1.5"/>
+  <g class="ink" transform="translate(4 4)" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 16.008v-8.018a1.98 1.98 0 0 0 -1 -1.717l-7 -4.008a2.016 2.016 0 0 0 -2 0l-7 4.008c-.619 .355 -1 1.01 -1 1.718v8.018c0 .709 .381 1.363 1 1.717l7 4.008a2.016 2.016 0 0 0 2 0l7 -4.008c.619 -.355 1 -1.01 1 -1.718z"/>
+    <path d="M12 22v-10"/>
+    <path d="M12 12l8.73 -5.04"/>
+    <path d="M3.27 6.96l8.73 5.04"/>
+  </g>
+</svg>

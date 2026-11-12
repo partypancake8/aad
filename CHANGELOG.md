@@ -6,6 +6,8 @@
   orients a fresh agent on aad (the loop, vocabulary, commands, reading a pin, the ten rules) without starting
   any work. User, project or any directory; never replaces a different file without `--force`; keeps local
   notes on reinstall.
+- Favicon: the Tabler cube on a dark tile in the accent blue (SVG with light and dark tab bar styles, plus 32 px
+  and 180 px PNGs); it turns yellow or green with a DEV or PROD title badge. `/favicon.ico` serves the PNG.
 - The packet prompt ends with "If your agent has the /aad skill, load it first."
 - The viewer server refuses requests for any Host other than 127.0.0.1, localhost or [::1] on its port, and
   writes that are not same-origin JSON; responses carry `nosniff` and a same-origin resource policy.

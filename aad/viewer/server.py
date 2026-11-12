@@ -1,7 +1,7 @@
 """`aad view`: a local three.js CAD viewer with the review workspace.
 
-Stdlib only (http.server on 127.0.0.1, foreground, Ctrl-C stops it). Page files are index.html, view.js and
-style.css next to this module. Routes:
+Stdlib only (http.server on 127.0.0.1, foreground, Ctrl-C stops it). Page files are index.html, view.js,
+style.css and the favicons next to this module. Routes:
   /                    the page
   /models.json         the loaded files and their groups (each directory is one group)
   /models/<n>          bytes of file n (.glb, .stl, .ply); /model.glb is an alias for the first GLB
@@ -44,11 +44,15 @@ import webbrowser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-              ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8"}
+              ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8",
+              ".png": "image/png"}
 PAGE_FILES = {"index.html": PAGE_TYPES[".html"], "view.js": PAGE_TYPES[".js"], "review.js": PAGE_TYPES[".js"],
               "repin.js": PAGE_TYPES[".js"], "pin_groups.js": PAGE_TYPES[".js"],
               "measure.js": PAGE_TYPES[".js"], "weight.js": PAGE_TYPES[".js"],
-              "style.css": PAGE_TYPES[".css"]}
+              "style.css": PAGE_TYPES[".css"],
+              "favicon.svg": PAGE_TYPES[".svg"], "favicon-dev.svg": PAGE_TYPES[".svg"],
+              "favicon-prod.svg": PAGE_TYPES[".svg"], "favicon-32.png": PAGE_TYPES[".png"],
+              "favicon-180.png": PAGE_TYPES[".png"]}
 
 
 def page_file(rel):
@@ -538,7 +542,7 @@ def make_handler(V, versions=None):
             if path in ("/", "/index.html"):
                 path = "/index.html"
             if path == "/favicon.ico":
-                return self._send(204, b"", "image/x-icon")
+                path = "/favicon-32.png"
             if path == "/status.json":
                 return self._json(200, V.status())
             if path == "/models.json":

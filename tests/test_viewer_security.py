@@ -94,3 +94,13 @@ def test_no_cors_headers_and_safe_response_headers(server):
     for st, hd, _ in seen:
         assert not [k for k in hd if k.startswith("access-control-")], hd
         assert hd.get("x-content-type-options") == "nosniff" and hd.get("cross-origin-resource-policy") == "same-origin", hd
+
+
+def test_favicon_routes(server):
+    status, h, body = call(server, "GET", "/favicon.svg")
+    assert status == 200 and h["content-type"] == "image/svg+xml" and body.startswith(b"<svg")
+    status, h, body = call(server, "GET", "/favicon.ico")
+    assert status == 200 and h["content-type"] == "image/png" and body.startswith(b"\x89PNG")
+    for path in ("/favicon-dev.svg", "/favicon-prod.svg", "/favicon-180.png"):
+        assert call(server, "GET", path)[0] == 200, path
+    assert call(server, "GET", "/favicon.svg", host="evil.example")[0] == 403

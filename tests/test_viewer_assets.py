@@ -35,7 +35,7 @@ def _resolve(spec, base, imports):
 def page_files():
     html, imports = _importmap()
     files = set()
-    for ref in re.findall(r'(?:src|href)="([^"]+\.(?:js|css))"', html):
+    for ref in re.findall(r'(?:src|href)="([^"]+\.(?:js|css|svg|png))"', html):
         files.add(os.path.normpath(os.path.join(VIEWER, ref)))
     todo = [f for f in files if f.endswith(".js")] + [os.path.normpath(os.path.join(VIEWER, v)) for v in imports.values()
                                                         if not v.endswith("/")]
@@ -52,6 +52,8 @@ def page_files():
             r = _resolve(spec, f, imports)
             if r:
                 todo.append(r)
+    from aad.viewer.server import PAGE_FILES                  # every whitelisted page file, favicons included
+    files.update(os.path.join(VIEWER, f) for f in PAGE_FILES)
     for css in [f for f in files if f.endswith(".css")]:
         if os.path.exists(css):
             for ref in re.findall(r"url\(([^)]+)\)", open(css, encoding="utf-8").read()):
@@ -79,3 +81,15 @@ def test_every_page_file_is_tracked_by_git():
         if r.returncode:
             untracked.append(os.path.relpath(f, REPO))
     assert not untracked, f"not tracked by git (check .gitignore): {untracked}"
+
+
+def test_favicons_are_page_files():
+    names = {os.path.basename(f) for f in page_files()}
+    assert {"favicon.svg", "favicon-dev.svg", "favicon-prod.svg", "favicon-32.png", "favicon-180.png"} <= names
+    html = open(os.path.join(VIEWER, "index.html"), encoding="utf-8").read()
+    assert '<link rel="icon" type="image/svg+xml" href="favicon.svg"' in html
+    cube = open(os.path.join(VIEWER, "vendor", "tabler-icons", "cube.svg"), encoding="utf-8").read()
+    for name in ("favicon.svg", "favicon-dev.svg", "favicon-prod.svg"):
+        svg = open(os.path.join(VIEWER, name), encoding="utf-8").read()
+        for d in re.findall(r'<path d="([^"]+)"', cube):           # the Tabler glyph, unchanged
+            assert f'<path d="{d}"/>' in svg, (name, d)
