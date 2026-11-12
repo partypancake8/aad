@@ -154,9 +154,13 @@ def test_schemas_reject_bad_documents():
              "tour")
     classes = json.load(open(os.path.join(ROOT, "aad", "review", "issue_classes.json")))["classes"]
     assert [c["id"] for c in classes] == [
+        "design_change", "appearance", "resize", "move", "add_feature", "remove_feature", "simplify", "lighten",
+        "strengthen",
         "weird_geometry", "incoherent_addition", "collateral_damage", "floating_unsupported", "orientation_mirror",
         "fit_clearance", "printability", "holes_ports_blocked", "fasteners_assembly", "regression", "belt_pulley",
-        "envelope_size", "intent_misread", "other"]
+        "envelope_size", "intent_misread",
+        "question", "keep", "reference",
+        "other"]
 
 
 def test_store_pins_resolve_reopen_and_issue_counts(tmp_path):
@@ -182,7 +186,8 @@ def test_store_pins_resolve_reopen_and_issue_counts(tmp_path):
     assert st.issue_counts()["total"] == {"weird_geometry": 1, "fit_clearance": 1}
 
 
-def test_store_baselines_keep_newest_three(tmp_path):
+def test_store_baselines_keep_newest_three(tmp_path, monkeypatch):
+    monkeypatch.setenv("AAD_KEEP_BUILDS", "3")                  # the retention setting
     st = Store(tmp_path / "proj")
     src = tmp_path / "m.glb"
     for i in range(5):
@@ -191,6 +196,30 @@ def test_store_baselines_keep_newest_three(tmp_path):
     bl = st.baselines()
     assert len(bl) == 3 and all(os.path.exists(p) for b in bl for p in b["paths"])
     assert st.snapshot([str(src)], build_id([str(src)]))["id"] == bl[0]["id"]     # same build: no new copy
+
+
+def test_revisions_keep_ten_builds_and_clear_keeps_reviewed(tmp_path, monkeypatch):
+    monkeypatch.delenv("AAD_KEEP_BUILDS", raising=False)
+    st = Store(tmp_path / "proj")
+    src = tmp_path / "m.glb"
+    write_parts(src, {"a": box((0, 0, 0))})
+    b0 = build_id([str(src)])
+    st.snapshot([str(src)], b0)
+    doc, _ = P.write(st, dict(model=dict(name="m", build=b0, files=[str(src)])))
+    st.mark_reviewed([str(src)], b0, doc["id"])
+    for i in range(1, 14):
+        write_parts(src, {"a": box((i, 0, 0))})
+        st.snapshot([str(src)], build_id([str(src)]))
+    bl = st.baselines()
+    assert len(bl) == 11 and b0 in {b["build"] for b in bl}           # the newest 10 plus the reviewed one
+    assert st.revisions_size() == sum(os.path.getsize(p) for b in bl for p in b["paths"]) > 0
+    cur = build_id([str(src)])
+    gone = st.clear_old(cur)
+    left = {b["build"] for b in st.baselines()}
+    assert len(gone) == 9 and left == {b0, cur}                       # reviewed and current stay
+    monkeypatch.setenv("AAD_KEEP_BUILDS", "nonsense")
+    from aad.review.store import keep_builds
+    assert keep_builds() == 10
 
 
 def test_packet_written_and_valid(tmp_path):
@@ -298,7 +327,8 @@ def test_viewer_review_routes(tmp_path):
         assert s["complete"]
         st = json.loads(get("/review/state.json")[1])
         assert st["project"] == str(tmp_path) and [b["id"] for b in st["baselines"]] == ["good"]
-        assert len(st["issue_classes"]) == 14
+        assert len(st["issue_classes"]) == 26
+        assert [g["id"] for g in st["issue_groups"]] == ["change_request", "problem", "note", "other"]
         assert post("/review/pins", dict(pins=[pin(1)]))[0] == 200
         assert post("/review/pins", dict(pins=[pin(1, severity="nope")]))[0] == 400
         assert post("/review/scope", dict(parts=[dict(key="bracket_demo.glb > bracket", node="bracket")]))[0] == 200
@@ -346,7 +376,8 @@ def rebuild(V, model, src, stamp):
     return V.review.current_build()
 
 
-def test_reviewed_baseline_is_pinned_and_the_default(tmp_path):
+def test_reviewed_baseline_is_pinned_and_the_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("AAD_KEEP_BUILDS", "3")
     st = Store(tmp_path / "proj")
     src = tmp_path / "m.glb"
     write_parts(src, {"a": box((0, 0, 0))})
@@ -490,3 +521,160 @@ def test_a_build_copied_in_later_keeps_its_place_by_build_time(tmp_path):
     st.snapshot([str(old)], build_id([str(old)]), bid="reviewed-x")       # copied in afterwards
     assert [b["id"] for b in st.baselines()][-1] == "reviewed-x"
     assert st.default_baseline("current")[0]["build"] == build_id([str(new)])
+
+
+# ---- class groups, keep pins, repin ----
+def test_every_class_has_a_group_in_order_and_old_ids_stay_valid():
+    doc = json.load(open(os.path.join(ROOT, "aad", "review", "issue_classes.json")))
+    groups = [g["id"] for g in doc["groups"]]
+    assert groups == ["change_request", "problem", "note", "other"]
+    seq = [groups.index(c["group"]) for c in doc["classes"]]
+    assert seq == sorted(seq), "classes are listed group by group in the group order"
+    by = {c["id"]: c["group"] for c in doc["classes"]}
+    old = ["weird_geometry", "incoherent_addition", "collateral_damage", "floating_unsupported", "orientation_mirror",
+           "fit_clearance", "printability", "holes_ports_blocked", "fasteners_assembly", "regression", "belt_pulley",
+           "envelope_size", "intent_misread"]
+    assert all(by[i] == "problem" for i in old) and by["other"] == "other"
+    assert [i for i, g in by.items() if g == "change_request"] == [
+        "design_change", "appearance", "resize", "move", "add_feature", "remove_feature", "simplify", "lighten",
+        "strengthen"]
+    assert [i for i, g in by.items() if g == "note"] == ["question", "keep", "reference"]
+    for c in doc["classes"]:
+        m = c["meaning"].strip()
+        assert m.endswith(".") and m.count(". ") == 0 and "\u2014" not in m, c["id"]
+        validate(pin(issue_class=c["id"]), "pin")
+    validate(pin(group="change_request"), "pin")
+    with pytest.raises(SchemaError):
+        validate(pin(group="wish"), "pin")
+
+
+def test_review_order_groups_and_note_instructions(tmp_path):
+    from aad.review.store import REPINNED
+    st = Store(tmp_path)
+    st.replace_pins([pin(1, issue_class="question", note="is this wall 2 mm?"), pin(2, issue_class="appearance", note=""),
+                     pin(3, issue_class="keep", note=""), pin(4, issue_class="fit_clearance"),
+                     pin(5, issue_class="weird_geometry", status="not_fixed", attempts=1),
+                     pin(6, issue_class="resize", attempts=1, repinned_at="2026-11-11T22:00:00Z", repinned_build="b1",
+                         history=[dict(at="2026-11-11T21:00:00-05:00", build="b0", kind="point", anchor=pin()["anchor"],
+                                       edge=None, parts=[], issue_class="weird_geometry", note="old spot",
+                                       severity="high", status="resolved", attempts=0)])])
+    s = json.loads(cli("--project", str(tmp_path), "--json"))
+    assert [p["id"] for p in s["open_pins"]] == ["p5", "p6", "p4", "p2", "p1", "p3"]
+    g = {p["id"]: p["group"] for p in s["open_pins"]}
+    assert g == {"p1": "note", "p2": "change_request", "p3": "note", "p4": "problem", "p5": "problem",
+                 "p6": "change_request"}
+    q = {p["id"]: p for p in s["open_pins"]}
+    assert q["p1"]["instruction"] == "answer only, change nothing" and q["p3"]["instruction"] == "locked by the user"
+    assert "instruction" not in q["p2"] and q["p6"]["escalation"] == REPINNED
+    assert q["p6"]["history"][0]["note"] == "old spot"
+    txt = cli("--project", str(tmp_path))
+    assert "#6 (p6) [REPINNED, attempt 1] change request: resize" in txt and REPINNED in txt
+    import datetime
+    t = datetime.datetime.fromisoformat("2026-11-11T21:00:00-05:00").astimezone().strftime("%H:%M")
+    assert f"earlier 1 ({t}, build b0, resolved): weird_geometry: old spot" in txt
+    assert "note: question (answer only, change nothing)" in txt and "note: keep (locked by the user)" in txt
+    assert "1 marked NOT FIXED and 1 REPINNED, listed first" in txt
+    doc, d = P.write(st, dict(model=dict(name="bracket_demo", files=[BAD])))
+    assert [p["id"] for p in doc["pins"]][:2] == ["p5", "p6"] and doc["pins"][1]["escalation"] == REPINNED
+    assert all("group" in p for p in doc["pins"]) and "#6 were REPINNED" in doc["prompt"]
+    validate(json.load(open(os.path.join(d, "packet.json"))), "packet")
+    ev = [json.loads(x)["event"] for x in open(st.path("history.jsonl"))]
+    p6 = dict(pin(6, issue_class="resize"), attempts=2, repinned_at="2026-11-11T23:00:00Z",
+              history=q["p6"]["history"] * 2)
+    st.replace_pins([p for p in st.pins() if p["id"] != "p6"] + [p6])
+    ev2 = [json.loads(x)["event"] for x in open(st.path("history.jsonl"))]
+    assert ev2[len(ev):] == ["repinned"]
+
+
+def test_keep_pin_is_a_local_lock(tmp_path):
+    from aad.review.keep import keep_changes
+    v3 = tmp_path / "v3.glb"
+    variant(v3)                                               # only the base plate changes against BAD
+    kp = lambda i, node, local: pin(i, issue_class="keep", note="",
+                                    anchor=dict(pin()["anchor"], part=dict(key="k", node=node), local=local))
+    near = kp(1, "bracket", [-28, -18, 1])                 # the base plate changed within 5 mm of it
+    far = kp(2, "bracket", [0, 0, 35])
+    res = keep_changes([BAD], [str(v3)], [near, far, pin(3, anchor=near["anchor"])])
+    assert [r["id"] for r in res] == ["p1"] and res[0]["near_changed"] is True and not res[0]["part_changed"]
+    assert keep_changes([BAD], [str(v3)], [dict(near, status="resolved")]) == []
+    # aad review flags it against the default baseline, the viewer's diff route returns it as `keep`
+    from aad.viewer.server import Sources, Viewer
+    import shutil
+    model = tmp_path / "out" / "bracket_demo.glb"
+    model.parent.mkdir()
+    shutil.copyfile(BAD, model)
+    proj = tmp_path / "proj"
+    V = Viewer(Sources([str(model)]), project=str(proj))
+    rebuild(V, model, BAD, 1_800_000_000)
+    V.review.post("/review/pins", dict(pins=[near, far]))
+    rebuild(V, model, variant, 1_800_000_100)
+    code, d = V.review.get("/review/diff.json", "")
+    assert code == 200 and [k["id"] for k in d["keep"]] == ["p1"]
+    s = json.loads(cli("--project", str(proj), "--json"))
+    assert [k["id"] for k in s["keep_changed"]] == ["p1"]
+    txt = cli("--project", str(proj))
+    assert txt.splitlines()[2].startswith("KEEP PIN CHANGED keep pin #1 on bracket: geometry within 5 mm")
+
+
+def test_repinned_pin_validates_with_history():
+    h = dict(at="2026-11-11T21:00:00Z", build=None, kind="edge", anchor=pin()["anchor"],
+             edge=dict(points=[[0, 0, 0], [1, 0, 0]], length_mm=1, start=[0, 0, 0], end=[1, 0, 0], midpoint=[.5, 0, 0],
+                       direction=[1, 0, 0]), parts=[], issue_class="other", note="", severity="low", status="open")
+    validate(pin(1, attempts=1, repinned_at="2026-11-11T22:00:00Z", history=[h]), "pin")
+    with pytest.raises(SchemaError):
+        validate(pin(1, history=[dict(h, colour="red")]), "pin")
+    with pytest.raises(SchemaError):
+        validate(pin(1, history=[dict(h, issue_class="vibes")]), "pin")
+
+
+# ---- weight estimate and Part info: per-part measures served from the diff's own stats ----
+def test_closed_shell_check_and_part_stats_route(tmp_path):
+    from aad.review.glb import Part
+    from aad.review.mesh import is_closed, stats
+    v, f = box(s=(10, 20, 30))
+    whole = Part(name="box", vertices=v, triangles=f)
+    assert is_closed(whole) and abs(stats(whole)["volume"] - 6000) < 1e-6
+    assert not is_closed(Part(name="open", vertices=v, triangles=f[:-1]))          # one triangle missing
+    flipped = f.copy()
+    flipped[0] = flipped[0][::-1]
+    assert not is_closed(Part(name="flipped", vertices=v, triangles=flipped))      # inconsistent winding
+    # a part written with split vertices (one copy per triangle) is still closed after welding
+    split = v[f].reshape(-1, 3)
+    assert is_closed(Part(name="split", vertices=split, triangles=np.arange(len(split)).reshape(-1, 3)))
+
+    from aad.viewer.server import Sources, Viewer, _bind
+    V = Viewer(Sources([BAD]), project=str(tmp_path))
+    srv = _bind(V, 0)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{srv.server_port}/part-stats.json", timeout=30) as r:
+            doc = json.loads(r.read())
+        by = {p["name"]: p for p in doc["parts"]}
+        assert set(by) == {"bracket", "base_plate", "screw_m5x20"}
+        _, st, _ = D.load([BAD])
+        for n, p in by.items():                                   # one source of truth: the diff's numbers
+            assert p["volume"] == st[n]["volume"] and p["area"] == st[n]["area"] and p["tris"] == st[n]["tris"]
+            assert p["closed"] is True and p["file"] == "bracket_demo.glb"
+        # the base plate: 100 x 80 x 3 mm less the 5.5 mm hole, within the tessellation
+        assert abs(by["base_plate"]["volume"] - (24000 - np.pi * 2.75 ** 2 * 3)) < 5
+        assert by["bracket"]["bbox"] == dict(min=[-30.0, -20.0, 0.0], max=[30.0, 20.0, 35.0])
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_measure_optional_fields_validate():
+    m = dict(id="m1", a=[0, 15, 35], b=[0, 20, 35], distance=5.0, delta=[0, 5, 0], pin="p1", kind="edge_edge",
+             label="edge to edge, parallel", angle_deg=0, point_distance=28.44, clicks=[[-12, 15, 35], [16, 20, 35]],
+             entities=["edge", "edge"], a_part=None, b_part=None)
+    from aad.review import schema as SC
+    common = SC.load("common")
+    out = []
+    SC._check(common["$defs"]["measure"], m, "measure", common, out)
+    assert out == []
+    legacy = {k: m[k] for k in ("id", "a", "b", "distance", "delta", "pin")}      # measurements before entity Measure
+    SC._check(common["$defs"]["measure"], legacy, "measure", common, out)
+    assert out == []
+    SC._check(common["$defs"]["measure"], dict(m, kind="guess"), "measure", common, out)
+    assert out, "an unknown kind is rejected"
