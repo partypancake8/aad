@@ -28,10 +28,20 @@
         "a_part": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/part_ref"}]},
         "b_part": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/part_ref"}]},
         "distance": {"type": "number", "minimum": 0}, "delta": {"$ref": "#/$defs/vec3"},
-        "pin": {"type": ["string", "null"]}
+        "pin": {"type": ["string", "null"]},
+        "kind": {"enum": ["point_point", "vertex_vertex", "vertex_edge", "edge_edge", "edge_length", "plane_plane",
+          "vertex_plane", "edge_plane"]},
+        "label": {"type": "string"},
+        "angle_deg": {"type": ["number", "null"]},
+        "point_distance": {"type": "number", "minimum": 0},
+        "clicks": {"type": "array", "items": {"$ref": "#/$defs/vec3"}},
+        "entities": {"type": "array", "items": {"enum": ["vertex", "edge", "face"]}}
       }},
     "issue_class": {"enum": ["weird_geometry", "incoherent_addition", "collateral_damage", "floating_unsupported",
       "orientation_mirror", "fit_clearance", "printability", "holes_ports_blocked", "fasteners_assembly",
-      "regression", "belt_pulley", "envelope_size", "intent_misread", "other"]}
+      "regression", "belt_pulley", "envelope_size", "intent_misread", "other",
+      "design_change", "appearance", "resize", "move", "add_feature", "remove_feature", "simplify", "lighten",
+      "strengthen", "question", "keep", "reference"]},
+    "issue_group": {"enum": ["change_request", "problem", "note", "other"]}
   }
 }

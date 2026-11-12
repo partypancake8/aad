@@ -11,13 +11,15 @@
                                                    <project>/.cadreview/tour.json
 """
 import argparse
+import datetime
 import json
 import os
 import sys
 
 from . import diff as D
 from .schema import SCHEMA
-from .store import Store, build_id, escalated_first, find_project, hhmm, issue_classes, with_reason
+from .keep import keep_changes, keep_pins
+from .store import Store, build_id, escalated_first, find_project, hhmm, is_repinned, issue_classes, with_reason
 
 
 def _store(a):
@@ -40,6 +42,8 @@ def _pin_line(p, orphaned):
     st = "" if p["status"] == "open" else f" [{p['status'].upper()}]"
     if p["status"] == "not_fixed":
         st = f" [NOT FIXED, attempt {p.get('attempts') or 1}]"
+    elif is_repinned(p):
+        st = f" [REPINNED, attempt {p.get('attempts') or 1}]"
     m = p.get("measure")
     meas = f"; measured {m['distance']:.2f} mm" if m else ""
     why = p.get("reason") or p.get("note") or ""
@@ -47,8 +51,45 @@ def _pin_line(p, orphaned):
     if p.get("escalation"):
         also = f"\n      {p['escalation']}" + also
     fu = f" (follow-up to {p['parent']})" if p.get("parent") else ""
-    return (f"  #{p['n']} ({p['id']}){st}{fu} {p['issue_class']} / {p['severity']}: {why}\n      {where}{meas}{tag}"
-            f"{also}")
+    grp = f"{p['group'].replace('_', ' ')}: " if p.get("group") else ""
+    ins = f" ({p['instruction']})" if p.get("instruction") else ""
+    return (f"  #{p['n']} ({p['id']}){st}{fu} {grp}{p['issue_class']}{ins} / {p['severity']}: {why}\n      {where}{meas}"
+            f"{tag}{also}" + _history_lines(p))
+
+
+def _local_hhmm(iso):
+    """HH:MM in local time of an ISO time (the viewer writes UTC "Z" times)."""
+    try:
+        return datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).astimezone().strftime("%H:%M")
+    except ValueError:
+        return hhmm(iso)
+
+
+def _history_lines(p):
+    """The repin trail of a pin, oldest first: where it was and what it said before each repin."""
+    out = []
+    for i, h in enumerate(p.get("history") or []):
+        an = h.get("anchor")
+        if an:
+            where = f"{an['part']['node']} at local ({', '.join(f'{x:.1f}' for x in an['local'])}) mm"
+        else:
+            where = f"region of {len(h.get('parts') or [])} part(s): " + ", ".join(x["node"] for x in (h.get("parts") or [])[:6])
+        why = h.get("note") or "(no note: the class meaning)"
+        out.append(f"\n      earlier {i + 1} ({_local_hhmm(h.get('at'))}, build {h.get('build')}, {h.get('status')}): "
+                   f"{h.get('issue_class')}: {why}; at {where}")
+    return "".join(out)
+
+
+def _keep_check(store, cur):
+    """Keep pins whose neighbourhood changed against the default baseline (since your last packet when there is one),
+    as (list, baseline label)."""
+    if not keep_pins(store.pins()):
+        return [], None
+    files = [p for p in cur.get("files") or [] if os.path.exists(p)]
+    b, _, label = store.default_baseline(cur.get("build"))
+    if not files or not b:
+        return [], None
+    return keep_changes(b["paths"], files, store.pins()), label
 
 
 def status(store):
@@ -66,6 +107,7 @@ def status(store):
                     files=b["paths"]) if b else None
     cam = store.camera() or {}
     tour = store.tour()
+    kc, kc_label = _keep_check(store, cur)
     return dict(schema=SCHEMA, project=store.project, review_dir=store.root,
                 model={k: cur.get(k) for k in ("name", "files", "build", "updated")} if cur else None,
                 open_pins=open_pins, resolved_pins=sum(1 for p in all_pins if p["status"] == "resolved"),
@@ -74,7 +116,7 @@ def status(store):
                 packets=store.packets()[:5],
                 tour=dict(path=store.path("tour.json"), stops=len(tour.get("stops", [])),
                           decisions=tour.get("decisions", {})) if tour else None,
-                issues=store.issue_counts())
+                issues=store.issue_counts(), keep_changed=kc, keep_against=kc_label)
 
 
 def format_status(s):
@@ -82,9 +124,13 @@ def format_status(s):
     m = s.get("model")
     out.append(f"model {m['name']} build {m['build']} ({len(m['files'] or [])} file(s))" if m else
                "model: none yet (open the viewer once with --project)")
+    for k in s.get("keep_changed") or []:
+        out.append(f"KEEP PIN CHANGED {k['message']} (against {s.get('keep_against')})")
     nf = sum(1 for p in s["open_pins"] if p["status"] == "not_fixed")
+    nr = sum(1 for p in s["open_pins"] if is_repinned(p))
+    first = " and ".join(x for x in (f"{nf} marked NOT FIXED" if nf else "", f"{nr} REPINNED" if nr else "") if x)
     out.append(f"open pins: {len(s['open_pins'])} (resolved {s['resolved_pins']})"
-               + (f"; {nf} marked NOT FIXED, listed first" if nf else ""))
+               + (f"; {first}, listed first" if first else ""))
     for p in s["open_pins"]:
         out.append(_pin_line(p, p.get("orphaned")))
     sc = s["scope"]

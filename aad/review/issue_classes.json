@@ -1,19 +1,37 @@
 {
-  "schema": "cadreview/1",
-  "classes": [
-    {"id": "weird_geometry", "label": "Weird geometry", "hint": "does not blend with the part, looks wrong, not cohesive design", "meaning": "This geometry does not blend with the part or make cohesive design sense; simplify or rebuild it so it reads as one intentional shape."},
-    {"id": "incoherent_addition", "label": "Incoherent addition", "hint": "added geometry satisfies the words but does not fit the part", "meaning": "This added feature satisfies the request on paper but does not fit the part; redesign it so it belongs to the part's form and purpose."},
-    {"id": "collateral_damage", "label": "Collateral damage", "hint": "an edit fixed one thing and broke neighbouring geometry", "meaning": "An edit changed or broke geometry here that was not part of the request; restore it to how it was before that edit."},
-    {"id": "floating_unsupported", "label": "Floating or unsupported", "hint": "touches nothing, hangs in the air, no load path", "meaning": "This touches nothing or has no load path; connect it to the structure it should sit on or remove it."},
-    {"id": "orientation_mirror", "label": "Orientation or mirror", "hint": "wrong side, flipped, mirrored, rotated", "meaning": "This is on the wrong side, flipped, mirrored or rotated; put it in the orientation the design intends."},
-    {"id": "fit_clearance", "label": "Fit or clearance", "hint": "interference, too tight, too loose, wrong gap", "meaning": "The fit here is wrong (interference, too tight or too loose); fix the clearance so the mating parts fit as intended."},
-    {"id": "printability", "label": "Printability", "hint": "overhangs, thin walls, unprintable features, print orientation", "meaning": "This will not print well (overhang, thin wall or unsupported feature); change the geometry or print orientation so it prints flat without supports."},
-    {"id": "holes_ports_blocked", "label": "Holes or ports blocked", "hint": "access, cable or screw path blocked", "meaning": "Access here is blocked (a cable, screw or tool path); clear the path so the hole or port can be used."},
-    {"id": "fasteners_assembly", "label": "Fasteners or assembly", "hint": "screw length, nut access, assembly order", "meaning": "The fastening or assembly here does not work (screw length, nut access or assembly order); make it possible to assemble with the chosen hardware."},
-    {"id": "regression", "label": "Regression", "hint": "something that was fixed before is broken again", "meaning": "Something that was fixed before is broken again here; restore the earlier fix without undoing later changes."},
-    {"id": "belt_pulley", "label": "Belt or pulley", "hint": "belt path, tension, pulley alignment", "meaning": "The belt or pulley here is wrong (path, tension or alignment); align the belt path and give it a working tension method."},
-    {"id": "envelope_size", "label": "Envelope or size", "hint": "outside the allowed envelope, too big or small", "meaning": "This is outside the allowed envelope or the wrong size; bring it back within the size limits."},
-    {"id": "intent_misread", "label": "Intent misread", "hint": "the agent did something other than what was meant", "meaning": "This is not what was asked for; reread the request and change this to match what was meant."},
-    {"id": "other", "label": "Other", "hint": "anything else", "meaning": "Something is wrong here; inspect this spot and fix what does not look intentional."}
-  ]
+ "schema": "cadreview/1",
+ "groups": [
+  {"id": "change_request", "label": "Change request", "badge": "Change"},
+  {"id": "problem", "label": "Problem", "badge": "Problem"},
+  {"id": "note", "label": "Note to the agent", "badge": "Note"},
+  {"id": "other", "label": "Other", "badge": "Other"}
+ ],
+ "classes": [
+  {"id": "design_change", "label": "Design change", "group": "change_request", "hint": "change the design of this feature", "meaning": "Change the design here as described; keep everything it connects to working."},
+  {"id": "appearance", "label": "Appearance", "group": "change_request", "hint": "proportions, edges, fillets, surface, visual weight", "meaning": "Change how this looks (proportions, edges, fillets, surface, visual weight); function and interfaces stay the same."},
+  {"id": "resize", "label": "Resize", "group": "change_request", "hint": "bigger, smaller, thicker, thinner", "meaning": "Make this bigger, smaller, thicker or thinner; use the note or the attached measurement for how much."},
+  {"id": "move", "label": "Move", "group": "change_request", "hint": "move this feature", "meaning": "Move this feature; everything that depends on its position moves with it."},
+  {"id": "add_feature", "label": "Add feature", "group": "change_request", "hint": "add something here", "meaning": "Add a feature here as the note describes; shape it so it belongs to the part, not a patch on top."},
+  {"id": "remove_feature", "label": "Remove feature", "group": "change_request", "hint": "take this feature out", "meaning": "Remove this feature and close up what it leaves, with no leftover geometry."},
+  {"id": "simplify", "label": "Simplify", "group": "change_request", "hint": "fewer faces, steps and special cases", "meaning": "Make this simpler (fewer faces, steps and special cases) with the same function."},
+  {"id": "lighten", "label": "Lighten", "group": "change_request", "hint": "take weight out", "meaning": "Take weight out here without weakening load paths."},
+  {"id": "strengthen", "label": "Strengthen", "group": "change_request", "hint": "more stiffness or strength", "meaning": "Add stiffness or strength here with a coherent shape, not a patch."},
+  {"id": "weird_geometry", "label": "Weird geometry", "group": "problem", "hint": "does not blend with the part, looks wrong, not cohesive design", "meaning": "This geometry does not blend with the part or make cohesive design sense; simplify or rebuild it so it reads as one intentional shape."},
+  {"id": "incoherent_addition", "label": "Incoherent addition", "group": "problem", "hint": "added geometry satisfies the words but does not fit the part", "meaning": "This added feature satisfies the request on paper but does not fit the part; redesign it so it belongs to the part's form and purpose."},
+  {"id": "collateral_damage", "label": "Collateral damage", "group": "problem", "hint": "an edit fixed one thing and broke neighbouring geometry", "meaning": "An edit changed or broke geometry here that was not part of the request; restore it to how it was before that edit."},
+  {"id": "floating_unsupported", "label": "Floating or unsupported", "group": "problem", "hint": "touches nothing, hangs in the air, no load path", "meaning": "This touches nothing or has no load path; connect it to the structure it should sit on or remove it."},
+  {"id": "orientation_mirror", "label": "Orientation or mirror", "group": "problem", "hint": "wrong side, flipped, mirrored, rotated", "meaning": "This is on the wrong side, flipped, mirrored or rotated; put it in the orientation the design intends."},
+  {"id": "fit_clearance", "label": "Fit or clearance", "group": "problem", "hint": "interference, too tight, too loose, wrong gap", "meaning": "The fit here is wrong (interference, too tight or too loose); fix the clearance so the mating parts fit as intended."},
+  {"id": "printability", "label": "Printability", "group": "problem", "hint": "overhangs, thin walls, unprintable features, print orientation", "meaning": "This will not print well (overhang, thin wall or unsupported feature); change the geometry or print orientation so it prints flat without supports."},
+  {"id": "holes_ports_blocked", "label": "Holes or ports blocked", "group": "problem", "hint": "access, cable or screw path blocked", "meaning": "Access here is blocked (a cable, screw or tool path); clear the path so the hole or port can be used."},
+  {"id": "fasteners_assembly", "label": "Fasteners or assembly", "group": "problem", "hint": "screw length, nut access, assembly order", "meaning": "The fastening or assembly here does not work (screw length, nut access or assembly order); make it possible to assemble with the chosen hardware."},
+  {"id": "regression", "label": "Regression", "group": "problem", "hint": "something that was fixed before is broken again", "meaning": "Something that was fixed before is broken again here; restore the earlier fix without undoing later changes."},
+  {"id": "belt_pulley", "label": "Belt or pulley", "group": "problem", "hint": "belt path, tension, pulley alignment", "meaning": "The belt or pulley here is wrong (path, tension or alignment); align the belt path and give it a working tension method."},
+  {"id": "envelope_size", "label": "Envelope or size", "group": "problem", "hint": "outside the allowed envelope, too big or small", "meaning": "This is outside the allowed envelope or the wrong size; bring it back within the size limits."},
+  {"id": "intent_misread", "label": "Intent misread", "group": "problem", "hint": "the agent did something other than what was meant", "meaning": "This is not what was asked for; reread the request and change this to match what was meant."},
+  {"id": "question", "label": "Question", "group": "note", "hint": "ask about the geometry, no change", "meaning": "Answer this about the geometry here; do not change anything."},
+  {"id": "keep", "label": "Keep as is", "group": "note", "hint": "this is right, lock it", "meaning": "This is right; do not change it, even if the part is inside the scope lock."},
+  {"id": "reference", "label": "Reference", "group": "note", "hint": "the example to match elsewhere", "meaning": "Use this as the example to match elsewhere."},
+  {"id": "other", "label": "Other", "group": "other", "hint": "anything else", "meaning": "Something is wrong here; inspect this spot and fix what does not look intentional."}
+ ]
 }

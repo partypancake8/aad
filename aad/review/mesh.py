@@ -114,6 +114,29 @@ def stats(part):
                 hash=_hash(a, b, c, 1e-3), shape_hash=_hash(a - cen, b - cen, c - cen, 1e-2))
 
 
+def is_closed(part, q=1e-4):
+    """True when the triangles form closed shells: after welding vertices to q mm, every undirected edge is used by
+    an even, non-zero number of triangles with as many in each direction (no boundary, consistent winding). The
+    viewer's weight estimate trusts the volume only then."""
+    a, b, c = _tri_arrays(part)
+    if len(a) == 0:
+        return False
+    tri = np.stack([a, b, c], axis=1).reshape(-1, 3)
+    _, vid = np.unique(np.round(tri / q).astype(np.int64), axis=0, return_inverse=True)
+    vid = vid.reshape(-1, 3)
+    e = np.concatenate([vid[:, [0, 1]], vid[:, [1, 2]], vid[:, [2, 0]]])
+    e = e[e[:, 0] != e[:, 1]]                               # degenerate (welded) triangles add nothing
+    if len(e) == 0:
+        return False
+    fwd = e[:, 0] < e[:, 1]
+    key = np.where(fwd[:, None], e, e[:, ::-1])
+    _, inv = np.unique(key, axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    n_f = np.bincount(inv, weights=fwd.astype(np.float64))
+    n_b = np.bincount(inv, weights=(~fwd).astype(np.float64))
+    return bool(np.all(n_f == n_b) and np.all(n_f > 0))
+
+
 # ---- detector helpers ----
 def components(part, q=1e-3):
     """Connected components of the triangle mesh after welding vertices closer than q mm."""

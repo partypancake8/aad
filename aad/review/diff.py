@@ -20,6 +20,7 @@ import time
 import numpy as np
 
 from . import detectors
+from . import mesh as M
 from .mesh import _hash, read_model, stats
 from .schema import SCHEMA, validate
 
@@ -55,6 +56,21 @@ def load(paths):
             _cache.pop(next(iter(_cache)))
         _cache[key] = res
     return res
+
+
+def part_table(paths):
+    """Per-part measures of one model for the viewer's weight estimate and Part info card, from the same stats the
+    diff uses (one source of truth): name, file, triangle count, volume (mm3), area (mm2), world box, closed."""
+    by, st, skipped = load(paths)
+    out = []
+    for name, s in st.items():
+        p = by[name]
+        closed = getattr(p, "closed_shell", None)
+        if closed is None:                                  # cached on the part, with the stats of this file signature
+            closed = p.closed_shell = M.is_closed(p)
+        out.append(dict(name=name, file=(p.extras or {}).get("file"), tris=s["tris"], volume=s["volume"],
+                        area=s["area"], bbox=s["bbox"], closed=closed))
+    return dict(parts=out, skipped=[os.path.basename(x) for x in skipped])
 
 
 def _close(x, y, rel, absol=1e-9):

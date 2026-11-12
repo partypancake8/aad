@@ -9,7 +9,7 @@ validated against schemas/ before it is written).
   current.json     the build the viewer shows: name, files, build id, part names (for orphan checks)
   diff.json        the latest diff the viewer or CLI computed
   history.jsonl    pin events (created, updated, resolved, reopened, deleted), for the known-issues counts
-  baselines/<id>/  copies of earlier builds kept automatically (newest 3) plus baseline.json; the build each of the
+  baselines/<id>/  copies of earlier builds kept automatically (newest 10, AAD_KEEP_BUILDS) plus baseline.json; the build each of the
                    newest 3 packets was sent against is a "reviewed" baseline (baseline.json "reviewed") that pruning
                    never removes, so "since your last packet" always compares the build the reviewer looked at
   packets/<ts>/    packet.json + view.png written by Send packet
@@ -24,10 +24,19 @@ import threading
 from .schema import SCHEMA, validate
 
 DIR = ".cadreview"
-KEEP_BASELINES = 3
+KEEP_BASELINES = 10                 # earlier builds kept as revisions; AAD_KEEP_BUILDS overrides (1 to 50)
 KEEP_REVIEWED = 3                   # packets whose reviewed build stays pinned
 _lock = threading.RLock()
 _build_cache = {}
+
+
+def keep_builds():
+    """How many earlier (unreviewed) builds are kept: AAD_KEEP_BUILDS when set (1 to 50), else KEEP_BASELINES.
+    A large assembly's GLB can be 30 MB, so the default stays at 10."""
+    try:
+        return max(1, min(50, int(os.environ.get("AAD_KEEP_BUILDS", KEEP_BASELINES))))
+    except ValueError:
+        return KEEP_BASELINES
 
 
 ISSUE_CLASSES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "issue_classes.json")
@@ -48,6 +57,29 @@ ESCALATION = ("Previous attempt did not fix this. Do not repeat the same approac
               "baseline.")
 
 
+REPINNED = ("The user moved this pin after your last attempt: the earlier spot and note are in history. The previous "
+            "change did not address what is wrong; read the new anchor and reason.")
+INSTRUCTIONS = {"question": "answer only, change nothing", "keep": "locked by the user"}
+GROUP_RANK = {"problem": 1, "other": 1, "change_request": 2, "note": 3}
+
+
+def issue_groups():
+    """The class groups in display order (id, label, badge) from issue_classes.json."""
+    with open(ISSUE_CLASSES) as fh:
+        return json.load(fh).get("groups") or []
+
+
+def class_group(issue_class, classes=None):
+    """The group of an issue class ("change_request", "problem", "note" or "other"); unknown ids are problems."""
+    return next((c.get("group") or "problem" for c in (classes or issue_classes()) if c["id"] == issue_class),
+                "problem")
+
+
+def is_repinned(pin):
+    """The reviewer moved this pin after an attempt (Repin): still open, with the repin trail in `history`."""
+    return bool(pin.get("repinned_at")) and pin.get("status") in ("open", "reopened")
+
+
 def with_reason(pin, classes=None):
     """A copy of a pin with `reason` (its note, or its class meaning when the note is empty: a note is optional and
     the class alone is a complete pin), `class_meaning` (the class's instruction to an agent) and, for a pin the reviewer
@@ -55,17 +87,32 @@ def with_reason(pin, classes=None):
     meaning = next((c.get("meaning", "") for c in (classes or issue_classes()) if c["id"] == pin.get("issue_class")),
                    "")
     note = (pin.get("note") or "").strip()
-    out = dict(pin, reason=note or meaning, class_meaning=meaning)
+    out = dict(pin, reason=note or meaning, class_meaning=meaning, group=class_group(pin.get("issue_class"), classes))
     if pin.get("status") == "not_fixed":
         out["escalation"] = ESCALATION
+    elif is_repinned(pin):
+        out["escalation"] = REPINNED
     else:
         out.pop("escalation", None)
+    if pin.get("issue_class") in INSTRUCTIONS:
+        out["instruction"] = INSTRUCTIONS[pin["issue_class"]]
+    else:
+        out.pop("instruction", None)
     return out
 
 
+def review_rank(pin, classes=None):
+    """Order for aad review and packets: not fixed and repinned pins first, then problems, change requests, notes."""
+    if pin.get("status") == "not_fixed" or is_repinned(pin):
+        return 0
+    return GROUP_RANK.get(class_group(pin.get("issue_class"), classes), 1)
+
+
 def escalated_first(pins):
-    """Pins with the ones marked Not fixed first (stable otherwise)."""
-    return sorted(pins, key=lambda p: p.get("status") != "not_fixed")
+    """Pins in review order (review_rank): the ones marked Not fixed or repinned first, then problems, change
+    requests and notes (stable otherwise)."""
+    classes = issue_classes()
+    return sorted(pins, key=lambda p: review_rank(p, classes))
 
 
 def hhmm(iso):
@@ -193,6 +240,8 @@ class Store:
                 o = old.get(k)
                 if o is None:
                     self._event("created", p)
+                elif len(p.get("history") or []) > len(o.get("history") or []):
+                    self._event("repinned", p)
                 elif o.get("status") != p.get("status"):
                     self._event(p["status"] if p["status"] != "open" else "reopened", p)
                 elif o != p:
@@ -409,8 +458,32 @@ class Store:
     def prune(self):
         with _lock:
             pinned = self.pinned_builds()
-            for old in [b for b in self.baselines() if b.get("build") not in pinned][KEEP_BASELINES:]:
+            for old in [b for b in self.baselines() if b.get("build") not in pinned][keep_builds():]:
                 shutil.rmtree(old["dir"], ignore_errors=True)
+
+    def revisions_size(self):
+        """Bytes stored under baselines/ (every kept revision)."""
+        total = 0
+        for b in self.baselines():
+            for p in b["paths"]:
+                try:
+                    total += os.path.getsize(p)
+                except OSError:
+                    pass
+        return total
+
+    def clear_old(self, current_build=None):
+        """Clear old revisions: remove every kept build except the reviewed ones (pinned by a packet) and the
+        current build. Returns the ids removed."""
+        with _lock:
+            pinned = self.pinned_builds()
+            gone = []
+            for b in self.baselines():
+                if b.get("build") in pinned or b.get("build") == current_build or b.get("reviewed"):
+                    continue
+                shutil.rmtree(b["dir"], ignore_errors=True)
+                gone.append(b["id"])
+            return gone
 
     def reviewed_baseline(self):
         """The baseline of the build the last packet was sent against, with `packet` (its id) and `reviewed_at`
