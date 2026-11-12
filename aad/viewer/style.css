@@ -136,12 +136,18 @@ ol,ul{list-style:none;margin:0;padding:0}
 .item .where{font-size:13px;color:var(--muted);word-break:break-word}
 .item .acts{margin-left:auto;display:flex;gap:4px}
 .item .acts button{padding:3px 6px}
-/* pin card: row 1 number, title, badges (wraps); row 2 the actions, 8 px apart, wrapping, never clipped */
+/* pin card: row 1 number, title, badges (wraps); then the actions in two groups that never split: the labelled
+   decisions (Resolve, Not fixed, Repin or Reopen) and the icon tools (fly, follow-up, delete) pushed right. Both
+   fit one line in a wide panel; otherwise the tools go to a second line as a group, never one lone button */
 .item.pin .ph{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
 .item.pin .ph .cls{min-width:0;overflow-wrap:anywhere}
-.item.pin .acts{margin:8px 0 2px;display:flex;flex-wrap:wrap;gap:8px}
-.item.pin .acts button{padding:4px 8px;font-size:13px;gap:5px;min-width:0}
+.item.pin .acts{margin:8px 0 2px;display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}
+.item.pin .acts .pa,.item.pin .acts .sa{display:flex;flex-wrap:nowrap;gap:8px;min-width:0}
+.item.pin .acts .sa{margin-left:auto}
+.item.pin .acts button{padding:4px 8px;font-size:13px;gap:5px;min-width:0;white-space:nowrap}
+.item.pin .acts .sa button{padding:4px 6px}
 .item.pin .acts .ic{width:16px;height:16px}
+@container (max-width:340px){.item.pin .acts button{padding:3px 6px;gap:4px;font-size:12.5px}.item.pin .acts .sa button{padding:3px 5px}.item.pin .acts .ic{width:15px;height:15px}}
 .item .hist{margin-top:4px;font-size:13px;color:#d2a8ff}
 .item.child{border-left:3px solid #58a6ff}
 .resolved-row{margin:4px 0 6px}

@@ -686,6 +686,13 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
    const bs=[...acts.querySelectorAll('button')].map(R);
    bs.forEach((b,i)=>{if(b.right>lr.right-1||b.left<lr.left+1)bad.push(li.dataset.pin+': button '+i+' clipped');
      const n=bs[i+1];if(n&&Math.abs(n.top-b.top)<2&&n.left-b.right<7.5)bad.push(li.dataset.pin+': buttons '+i+','+(i+1)+' gap '+(n.left-b.right).toFixed(1));});
+   // polish 2: the action row is one line, or two lines of at least two buttons each (never one lone button);
+   // icon-only buttons carry a title, Resolve, Not fixed, Repin and Reopen keep their labels
+   const lines=new Map();for(const b of bs){const k=Math.round(b.top);lines.set(k,(lines.get(k)||0)+1);}
+   if(lines.size>2||[...lines.values()].some(n=>n<2))bad.push(li.dataset.pin+': action lines '+JSON.stringify([...lines.values()]));
+   for(const b of acts.querySelectorAll('button')){const lab=b.textContent.trim();
+     if(!lab&&!b.title)bad.push(li.dataset.pin+': icon button without a title');
+     if(['resolve','notfixed','repin','reopen'].includes(b.dataset.act)&&!lab)bad.push(li.dataset.pin+': '+b.dataset.act+' lost its label');}
    if(/\b[0-9a-f]{12}\b/.test(li.innerText))bad.push(li.dataset.pin+': a build hash in the card text');
    const h=li.querySelector('.hist');if(h&&!/^(reopened: part changed again|marked not fixed|resolved) at (\w{3} \d+ )?\d\d:\d\d$/.test(h.textContent))bad.push('status line '+h.textContent);
   }
@@ -720,7 +727,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await page.locator('#tabs [data-tab=diff]').click();await page.waitForTimeout(300);assert.deepEqual(await layout(),[],'diff at a 300 px panel');
  if(SHOTS){const f=path.join(SHOTS,'diff-300px-panel.png');await page.locator('#panel').screenshot({path:f});shots.push(f);}
  await page.evaluate(()=>document.body.style.removeProperty('--panel-w'));await page.setViewportSize({width:1600,height:1050});
- ok('layout at 1280 and 1600 px and a 300 px panel: no clipped, touching or overflowing controls'+(SHOTS?' ('+shots.length+' screenshots)':''));
+ ok('layout at 1280 and 1600 px and a 300 px panel: no clipped, touching or overflowing controls; pin actions on one line or two whole groups'+(SHOTS?' ('+shots.length+' screenshots)':''));
  // ---- 6: weight estimate, Part info, entity Measure, deleting and clearing measurements (functions at the end) ----
  await checkWeight(page,ok);
  await checkMeasureEntities(page,ok);

@@ -298,17 +298,20 @@ export function initReview(V){
     if(p.status==='resolved')return {t:`resolved at ${when(p.resolved_at)}`,tip:p.resolved_build?`resolved on build ${p.resolved_build}`:''};
     return null;
   }
-  // a pin card: row 1 number, title and badges (wraps), row 2 the actions (8 px apart, wrap, never clipped), then
+  // a pin card: row 1 number, title and badges (wraps), then the actions (labelled group, icon group; each group
+  // stays whole, so a wrap gives two clean lines and never one lone button), then
   // the note, where it is, and one short status line
   const ACT=(act,icon,text,title,cls='')=>`<button data-act="${act}"${cls?` class="${cls}"`:''} title="${title}" aria-label="${text||title.split(':')[0]}"><i class="ic i-${icon}"></i>${text?`<span>${text}</span>`:''}</button>`;
   function pinItem(p){
     const li=document.createElement('li');li.className='item pin'+(p.id===hotPin?' sel':'');li.dataset.pin=p.id;
     const orphan=orphaned(p),done=p.status==='resolved',sl=statusLine(p),par=p.parent&&S.pins.find(x=>x.id===p.parent);
     const repin=RP.offer(p,changedHere(p))?ACT('repin','map-pin-exclamation','Repin','Repin: something is still wrong; click the spot that is wrong now (same pin, attempt + 1)','danger'):'';
-    const acts=done?ACT('fly','crosshair','','Fly to this pin')+ACT('reopen','refresh','Reopen','Reopen this pin')+repin+ACT('delete','trash','','Delete pin'):
-      ACT('fly','crosshair','','Fly to this pin')+ACT('resolve','check','Resolve','Mark resolved: the pin leaves the list (undo brings it back)')+
-      ACT('notfixed','alert-octagon','Not fixed','Not fixed: the last attempt did not fix this; the next packet says so and lists it first','danger')+
-      repin+ACT('followup','corner-down-right','','Add follow-up pin: the next pin you drop follows up this one')+ACT('delete','trash','','Delete pin');
+    // two groups that wrap as units: the labelled decisions, then the icon-only tools (fly, follow-up, delete)
+    const main=done?ACT('reopen','refresh','Reopen','Reopen this pin')+repin:
+      ACT('resolve','check','Resolve','Mark resolved: the pin leaves the list (undo brings it back)')+
+      ACT('notfixed','alert-octagon','Not fixed','Not fixed: the last attempt did not fix this; the next packet says so and lists it first','danger')+repin;
+    const tools=ACT('fly','crosshair','','Fly to this pin')+(done?'':ACT('followup','corner-down-right','','Add follow-up pin: the next pin you drop follows up this one'))+ACT('delete','trash','','Delete pin');
+    const acts=`<span class="pa">${main}</span><span class="sa">${tools}</span>`;
     li.innerHTML=`<div class="ph"><span class="num sev-${p.severity} g-${groupOf(classes,p.issue_class)}${done?' resolved':''}">${p.n}</span>
       <span class="cls">${esc(label(p.issue_class))}</span>${groupBadge(classes,groups,p.issue_class)}<span class="chip">${esc(p.severity)}</span>${RP.badge(p)}
       ${p.status==='reopened'?'<span class="chip reopened">reopened</span>':''}${p.status==='not_fixed'?`<span class="chip notfixed">Not fixed, attempt ${p.attempts||1}</span>`:''}
