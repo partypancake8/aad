@@ -162,7 +162,7 @@ def format_status(s):
         for c in d["collateral"][:12]:
             out.append(f"  COLLATERAL {c}")
         for w in d["warnings"][:12]:
-            out.append(f"  warning {w['kind']} {w['part']}: {w['message']}")
+            out.append(f"  warning {w['kind']}{' (mesh hint)' if w.get('hint') else ''} {w['part']}: {w['message']}")
     else:
         out.append("latest diff: none")
     c = s.get("camera")

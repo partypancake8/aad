@@ -185,60 +185,165 @@ def components(part, q=1e-3):
     return int(len(np.unique(lab[used])))
 
 
-def slivers(part, aspect=40.0, min_height=0.05):
-    """Triangles that are needle- or cap-shaped: longest edge / shortest altitude above `aspect` and shortest
-    altitude under `min_height` mm. CAD tessellation makes some of these on curved faces; the detector compares
-    against the baseline count."""
+def sliver_mask(part, aspect=40.0, min_height=0.05):
+    """Boolean mask of the needle- or cap-shaped triangles: longest edge / shortest altitude above `aspect` and
+    shortest altitude under `min_height` mm, plus the area of every triangle (mm2)."""
     a, b, c = _tri_arrays(part)
     if len(a) == 0:
-        return 0
+        return np.zeros(0, bool), np.zeros(0)
     e = np.stack([np.linalg.norm(b - a, axis=1), np.linalg.norm(c - b, axis=1), np.linalg.norm(a - c, axis=1)], 1)
     longest = e.max(1)
     area2 = np.linalg.norm(np.cross(b - a, c - a), axis=1)
     h = np.where(longest > 0, area2 / np.maximum(longest, 1e-12), 0)
-    return int(np.count_nonzero((longest > aspect * np.maximum(h, 1e-12)) & (h < min_height) & (area2 > 1e-12)))
+    return (longest > aspect * np.maximum(h, 1e-12)) & (h < min_height) & (area2 > 1e-12), area2 / 2
 
 
-def min_thickness(part, samples=400, max_tris=400000, seed=0):
-    """Smallest wall thickness found by casting rays inward (against the outward normal) from sampled triangle
-    centres to the part's own surface. Returns (thickness mm or None, world point of the thinnest sample)."""
+def slivers(part, aspect=40.0, min_height=0.05):
+    """Triangles that are needle- or cap-shaped (sliver_mask). CAD tessellation makes some of these on curved faces,
+    and a finer tessellation makes more of them with no change in shape: the detector compares the count and the
+    summed area against the baseline."""
+    return int(np.count_nonzero(sliver_mask(part, aspect, min_height)[0]))
+
+
+def component_labels(part, q=1e-3):
+    """Per-triangle shell label (connected components after welding vertices closer than q mm) and the count."""
+    v, t = part.vertices, part.triangles
+    if len(t) == 0:
+        return np.zeros(0, np.int64), 0
+    _, inv = np.unique(np.round(v / q).astype(np.int64), axis=0, return_inverse=True)
+    tt = inv.reshape(-1)[t]
+    n = int(tt.max()) + 1
+    try:
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+        e = np.concatenate([tt[:, [0, 1]], tt[:, [1, 2]]])
+        _, vl = connected_components(coo_matrix((np.ones(len(e), dtype=np.int8), (e[:, 0], e[:, 1])), shape=(n, n)),
+                                     directed=False)
+        _, tl = np.unique(vl[tt[:, 0]], return_inverse=True)
+        return tl.reshape(-1), int(tl.max()) + 1
+    except ImportError:
+        pass
+    lab = np.arange(n)
+    while True:                                   # label propagation over triangle corners to a fixed point
+        m = np.minimum(np.minimum(lab[tt[:, 0]], lab[tt[:, 1]]), lab[tt[:, 2]])
+        new = lab.copy()
+        for k in range(3):
+            np.minimum.at(new, tt[:, k], m)
+        new = new[new]
+        if np.array_equal(new, lab):
+            break
+        lab = new
+    tl = lab[tt[:, 0]]
+    _, tl = np.unique(tl, return_inverse=True)
+    return tl.reshape(-1), int(tl.max()) + 1
+
+
+# ---- wall thickness ----
+# A ray from each triangle centre goes inward (against the outward normal) to the part's own surface. A hit counts as
+# the far side of a wall only when (1) the far face shares no vertex with the origin triangle (a face meeting it at an
+# edge or corner, as at a sharp wedge or along a fillet, is the same surface turning, not the other side of a wall),
+# (2) the far face faces back toward the origin face (normals at least 120 degrees apart: the ray leaves the solid
+# through it, it does not graze a side face), and (3) the reading is backed by a patch of agreeing samples: the
+# triangles of the same surface within max(1, 3 t) mm whose own reading is within 50 percent + 0.05 mm sum to at
+# least PATCH_MM2 of area. The search is exhaustive (every triangle centre) but only looks `cap` mm deep, with the
+# rays processed in spatially coherent blocks against the triangles near each block, so the answer is deterministic.
+ADJ_Q = 1e-4
+OPPOSE_COS = 0.5
+PATCH_MM2 = 0.5
+
+
+def _morton(q):
+    q = np.clip(q, 0, 0x1FFFFF).astype(np.int64)
+
+    def spread(x):
+        x = (x | (x << 32)) & 0x1F00000000FFFF
+        x = (x | (x << 16)) & 0x1F0000FF0000FF
+        x = (x | (x << 8)) & 0x100F00F00F00F00F
+        x = (x | (x << 4)) & 0x10C30C30C30C30C3
+        x = (x | (x << 2)) & 0x1249249249249249
+        return x
+    return spread(q[:, 0]) | (spread(q[:, 1]) << 1) | (spread(q[:, 2]) << 2)
+
+
+def _cast(org, d, src_vid, a, e1, e2, n, vid):
+    """Nearest valid hit (t, triangle index) per ray against triangles a, e1, e2 with normals n and welded vertex ids
+    vid; rules (1) and (2) above. t is inf where nothing counts."""
+    pv = np.cross(d[:, None, :], e2[None, :, :])
+    det = np.einsum("tk,rtk->rt", e1, pv)
+    good = np.abs(det) > 1e-12
+    inv = np.where(good, 1.0 / np.where(good, det, 1.0), 0.0)
+    tv = org[:, None, :] - a[None, :, :]
+    u = np.einsum("rtk,rtk->rt", tv, pv) * inv
+    qv = np.cross(tv, e1[None, :, :])
+    v = np.einsum("rk,rtk->rt", d, qv) * inv
+    t = np.einsum("tk,rtk->rt", e2, qv) * inv
+    hit = good & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-4)
+    hit &= ~(vid[None, :, :, None] == src_vid[:, None, None, :]).any(axis=(2, 3))
+    hit &= np.einsum("rk,tk->rt", -d, n) <= -OPPOSE_COS
+    t = np.where(hit, t, np.inf)
+    k = t.argmin(1)
+    return t[np.arange(len(org)), k], k
+
+
+def thickness_map(part, cap, block=128):
+    """Wall thickness under every triangle centre where it is at most `cap` mm (inf elsewhere), the far triangle of
+    each, and the triangle centres, unit normals and areas (mm2)."""
     a, b, c = _tri_arrays(part)
     m = len(a)
-    if m == 0 or m > max_tris:
-        return None, None
     cr = np.cross(b - a, c - a)
     area2 = np.linalg.norm(cr, axis=1)
     ok = area2 > 1e-10
-    if not ok.any():
-        return None, None
     n = np.zeros_like(cr)
     n[ok] = cr[ok] / area2[ok, None]
-    if m <= samples:
-        idx = np.nonzero(ok)[0]
-    else:
-        rng = np.random.default_rng(seed)
-        p = np.where(ok, area2, 0)
-        idx = rng.choice(m, size=samples, replace=False, p=p / p.sum())
-    org = (a[idx] + b[idx] + c[idx]) / 3.0
-    d = -n[idx]
+    _, vid = np.unique(np.round(part.vertices / ADJ_Q).astype(np.int64), axis=0, return_inverse=True)
+    vid = vid.reshape(-1)[part.triangles]
+    cen = (a + b + c) / 3.0
     e1, e2 = b - a, c - a
-    best, where = np.inf, None
-    chunk = max(1, int(4e6 // max(m, 1)))
-    for s in range(0, len(idx), chunk):
-        o, dd = org[s:s + chunk], d[s:s + chunk]
-        pv = np.cross(dd[:, None, :], e2[None, :, :])
-        det = np.einsum("tk,rtk->rt", e1, pv)
-        good = np.abs(det) > 1e-12
-        inv = np.where(good, 1.0 / np.where(good, det, 1.0), 0.0)
-        tv = o[:, None, :] - a[None, :, :]
-        u = np.einsum("rtk,rtk->rt", tv, pv) * inv
-        qv = np.cross(tv, e1[None, :, :])
-        v = np.einsum("rk,rtk->rt", dd, qv) * inv
-        t = np.einsum("tk,rtk->rt", e2, qv) * inv
-        hit = good & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-4)
-        t = np.where(hit, t, np.inf)
-        tm = t.min(1)
-        k = int(np.argmin(tm))
-        if tm[k] < best:
-            best, where = float(tm[k]), (o[k] + dd[k] * tm[k] / 2).tolist()
-    return (best if np.isfinite(best) else None), where
+    lo, hi = np.minimum(np.minimum(a, b), c), np.maximum(np.maximum(a, b), c)
+    T, K = np.full(m, np.inf), np.full(m, -1)
+    src = np.nonzero(ok)[0]
+    if len(src):
+        c0 = cen[src].min(0)
+        cell = max(cap, float((cen[src].max(0) - c0).max()) / 2e6, 1e-6)
+        order = src[np.argsort(_morton(np.floor((cen[src] - c0) / cell)), kind="stable")]
+        for s in range(0, len(order), block):
+            ids = order[s:s + block]
+            clo, chi = cen[ids].min(0) - cap, cen[ids].max(0) + cap
+            cand = np.nonzero(np.all((lo <= chi) & (hi >= clo), axis=1))[0]
+            if not len(cand):
+                continue
+            t, k = _cast(cen[ids], -n[ids], vid[ids], a[cand], e1[cand], e2[cand], n[cand], vid[cand])
+            got = t <= cap
+            T[ids[got]] = t[got]
+            K[ids[got]] = cand[k[got]]
+    return T, K, cen, n, area2 / 2, ok
+
+
+def min_thickness(part, cap=4.0, max_tris=400000, detail=False):
+    """Thinnest wall found under any triangle centre, up to `cap` mm deep (rules above). Returns (thickness mm or
+    None, world point mid-wall), or with detail=True (thickness, point, evidence) where evidence holds the world
+    origin and far points, both triangles' corners, the agreeing patch's area and sample count."""
+    none = (None, None, None) if detail else (None, None)
+    a, b, c = _tri_arrays(part)
+    if len(a) == 0 or len(a) > max_tris:
+        return none
+    T, K, cen, n, area, ok = thickness_map(part, cap)
+    for i0 in np.argsort(T, kind="stable"):
+        t0 = T[i0]
+        if not np.isfinite(t0):
+            return none
+        near = np.nonzero(ok & (np.linalg.norm(cen - cen[i0], axis=1) <= max(1.0, 3 * t0)) & (n @ n[i0] >= 0.9)
+                          & (T <= 1.5 * t0 + 0.05))[0]
+        patch = float(area[near].sum())
+        if patch < PATCH_MM2:
+            continue
+        org, far = cen[i0], cen[i0] - n[i0] * t0
+        where = ((org + far) / 2).tolist()
+        if not detail:
+            return float(t0), where
+        k = K[i0]
+        return float(t0), where, dict(origin=org.tolist(), hit=far.tolist(),
+                                      origin_tri=[a[i0].tolist(), b[i0].tolist(), c[i0].tolist()],
+                                      hit_tri=[a[k].tolist(), b[k].tolist(), c[k].tolist()],
+                                      patch_mm2=round(patch, 4), samples=int(len(near)))
+    return none

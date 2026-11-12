@@ -21,7 +21,13 @@
     "warning": {"type": "object", "required": ["kind", "part", "message"], "additionalProperties": false,
       "properties": {"kind": {"enum": ["new_components", "slivers", "thin_feature", "triangle_jump", "floating"]},
         "part": {"type": "string"}, "message": {"type": "string"}, "value": {"type": ["number", "null"]},
-        "baseline": {"type": ["number", "null"]}, "at": {"anyOf": [{"type": "null"}, {"$ref": "common.schema.json#/$defs/vec3"}]}}}
+        "baseline": {"type": ["number", "null"]}, "at": {"anyOf": [{"type": "null"}, {"$ref": "common.schema.json#/$defs/vec3"}]},
+        "hint": {"type": "boolean", "description": "a mesh hint (tessellation), not a shape problem"},
+        "evidence": {"type": ["object", "null"], "description": "where the warning is, part-local mm in the part's node frame: thin_feature origin, hit (vec3) and origin_tri, hit_tri (9 numbers); slivers and new_components tris (9 numbers per triangle, capped) and count; floating corners (box min and max)",
+          "properties": {"origin": {"$ref": "common.schema.json#/$defs/vec3"}, "hit": {"$ref": "common.schema.json#/$defs/vec3"},
+            "origin_tri": {"type": "array", "items": {"type": "number"}}, "hit_tri": {"type": "array", "items": {"type": "number"}},
+            "tris": {"type": "array", "items": {"type": "number"}}, "count": {"type": "integer"},
+            "corners": {"type": "array", "items": {"type": "number"}}}}}}
   },
   "properties": {
     "schema": {"const": "cadreview/1"},

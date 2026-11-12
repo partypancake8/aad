@@ -436,3 +436,35 @@ body.tree-sized #side-low{flex:1 1 0;overflow:auto}
 body.pane-drag,body.pane-drag *{user-select:none!important;-webkit-user-select:none!important}
 body.pane-drag{cursor:col-resize}
 body.pane-drag.rows{cursor:row-resize}
+
+/* detector warnings in the Revisions tab: each row flies to its evidence; the active one is outlined */
+.warnrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin:4px 0 0;padding:4px 6px;border:1px solid transparent;border-radius:6px;cursor:pointer;font-size:13px;color:var(--fg)}
+.warnrow:hover,.warnrow:focus-visible{border-color:#9e6a03;background:#2a1f00;outline:none}
+.warnrow.on{border-color:#f2cc60;background:#3d2e00}
+.warnrow .wmsg{flex:1 1 160px;min-width:0;word-break:break-word}
+.warnrow .wpin{margin-left:auto;padding:2px 8px;font-size:12px}
+.chip.hint{background:#1c2b3a;color:#9ecbff;border:1px solid #388bfd}
+.measure-dot.evidence{width:9px;height:9px;border-radius:5px;border:2px solid #fff;background:#ff4d4f}
+.measure-dot.evidence.hit{background:#ffd43b}
+.measure-label.evidence{border-color:#ff4d4f}
+
+/* the tour: a stop's long note collapses after --lines lines with Show more; faded pins during a stop's focus */
+.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--lines,6);overflow:hidden}
+.clamp.open{display:block;-webkit-line-clamp:unset;overflow:visible}
+#tour-out button.more{margin:2px 0 4px;padding:1px 8px;font-size:12px}
+#tour-out button.more.open .ic{rotate:180deg}
+.tour-whole{display:flex;align-items:center;gap:6px;margin:6px 0 2px;font-size:13px;color:var(--fg)}
+.tour-author{font-weight:400}
+.tour-esc{margin-top:6px}
+.pin-marker.faded{opacity:.28}
+#edge-lines .edge-line.faded,#edge-lines .edge-halo.faded{opacity:.25}
+
+/* stale server guard (index.html): a persistent banner across the top with the restart command */
+#stale-banner{position:fixed;left:0;right:0;top:0;z-index:1000;display:flex;gap:10px;align-items:flex-start;padding:10px 16px;background:#3d2e00;color:#f8e3a1;border-bottom:1px solid #9e6a03;font-size:14px}
+#stale-banner[hidden]{display:none}
+body.stale{box-sizing:border-box;padding-top:var(--stale-h,0px)}
+#stale-banner b{color:#fff3c4}
+#stale-banner .ic{margin-top:2px;background:#f2cc60}
+#stale-cmdrow{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+#stale-cmd{font:12px ui-monospace,Menlo,monospace;color:#fff3c4;background:#0d1117;border:1px solid #9e6a03;border-radius:6px;padding:3px 8px;word-break:break-all}
+#stale-copy{padding:2px 8px;font-size:12px}

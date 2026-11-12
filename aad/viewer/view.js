@@ -100,7 +100,8 @@ Object.defineProperty(controls,'enableDamping',{get(){return controls.smoothTime
 const OPT_KEY='aad-viewer-options';
 const OPTS=(()=>{let o={};try{o=JSON.parse(localStorage.getItem(OPT_KEY)||'{}')||{};}catch(e){o={};}
   return {nav:o.nav==='classic'?'classic':'fusion',bg:typeof o.bg==='string'?o.bg:null,edges:typeof o.edges==='boolean'?o.edges:null,
-    orbit:o.orbit==='constrained'?'constrained':'free',large:o.large===false?false:true,pivot:['selection','cursor'].includes(o.pivot)?o.pivot:'view'};})();
+    orbit:o.orbit==='constrained'?'constrained':'free',large:o.large===false?false:true,pivot:['selection','cursor'].includes(o.pivot)?o.pivot:'view',
+    through:o.through===false?false:true};})();
 function saveOpts(){try{localStorage.setItem(OPT_KEY,JSON.stringify(OPTS));}catch(e){}}
 const NAV_HINT={fusion:'Navigation Fusion: middle drag pans, Shift+middle orbits, wheel zooms, double middle-click fits; trackpad: scroll pans, Shift+scroll orbits, pinch zooms',
   classic:'Navigation Classic: left drag orbits, right or middle drag pans, wheel zooms'};
@@ -747,6 +748,8 @@ document.querySelectorAll('#bg-presets button').forEach(b=>b.onclick=()=>{OPTS.b
 $('bg-custom').oninput=e=>{OPTS.bg=e.target.value;saveOpts();applyBg();};
 $('opt-edges').onchange=e=>setEdges(e.target.checked,true);
 $('opt-large').checked=OPTS.large!==false;
+$('opt-through').checked=OPTS.through!==false;
+$('opt-through').onchange=e=>{OPTS.through=e.target.checked;saveOpts();pickMemo=null;edgeMemo=null;lastMove=lastMove||lastPointer;dirty=true;};
 $('opt-large').onchange=e=>{OPTS.large=e.target.checked;saveOpts();largeNoted='';largeNote();if(R)R.onLargeMode?.();};
 $('large-note-x').onclick=()=>{$('large-note').hidden=true;};
 
@@ -1167,25 +1170,56 @@ function sameKey(a,b){
   if(!a||a.x!==b.x||a.y!==b.y||a.f!==b.f||a.g!==b.g||a.c!==b.c||a.cv!==b.cv||a.p0!==b.p0||a.p5!==b.p5)return false;
   for(let i=0;i<16;i++)if(a.m[i]!==b.m[i])return false;return true;
 }
+// ---- see-through parts: a part whose material (after the viewer's own overrides, such as the review focus fade) is
+// clear, opacity under CLEAR_OPACITY or any transmission, is see-through. It never hides a pin (review.js asks
+// pickOpaque), and by default a click, hover, right-click or edge pick goes through it to the nearest opaque part behind
+// (Options: Pick through clear parts, on by default). Holding Alt, or a spot with nothing opaque behind, takes the
+// clear part itself; the hover tip names what a click takes and adds "(through <clear part>)". The tree and the
+// right-click menu's "Pick the clear part in front" still reach the clear part. One raycast gives the ordered hits. ----
+const CLEAR_OPACITY=0.6;
+function seeThrough(m){
+  const mats=Array.isArray(m.material)?m.material:[m.material];
+  return mats.length>0&&mats.every(x=>x&&((x.transparent&&x.opacity<CLEAR_OPACITY)||(x.transmission||0)>0));
+}
+const throughWanted=ev=>OPTS.through!==false&&!(ev&&ev.altKey);
 // the nearest visible hit under a pointer event (section planes respected; BVH-accelerated), or null. A part of a
-// large model is pickable once its preparation has arrived (until then it would be a brute-force raycast).
+// large model is pickable once its preparation has arrived (until then it would be a brute-force raycast). With a
+// see-through part in front and an opaque one behind it, the opaque hit is returned (its `through` is the clear hit)
+// unless Alt is held or Options turned picking through off.
 function pickHit(ev){
+  const r=pickHits(ev);if(!r.first)return null;
+  if(r.opaque&&r.opaque!==r.first&&throughWanted(ev))return r.opaque;
+  return r.first;
+}
+// the nearest opaque hit (see-through parts skipped), for the pin occlusion test
+function pickOpaque(ev){return pickHits(ev).opaque;}
+// what a hit picks through: the see-through hit in front of it, or null
+const throughOf=h=>h&&h.through&&h.through!==h?h.through:null;
+function pickHits(ev){
   PERF.pickCalls++;
   const key=pickKey(ev);if(pickMemo&&sameKey(pickMemo.key,key))return pickMemo.h;
-  const h=pickHitNow(ev);pickMemo={key,h};return h;
+  const h=pickHitsNow(ev);pickMemo={key,h};return h;
 }
-function pickHitNow(ev){
+function pickHitNow(ev){const r=pickHitsNow(ev);return r.first&&r.opaque&&r.opaque!==r.first&&throughWanted(ev)?r.opaque:r.first;}
+function pickHitsNow(ev){
   PERF.raycasts++;
   const r=canvas.getBoundingClientRect();
   let list=meshList.filter(m=>effVisible(m)&&!prepPending.has(m.geometry));
   if(fishOn()){
-    const d=fishDir(ev);if(!d)return null;ray.set(new THREE.Vector3(...camMode.eye),d);
+    const d=fishDir(ev);if(!d)return {first:null,opaque:null};ray.set(new THREE.Vector3(...camMode.eye),d);
     const obs=new Set();for(const o of observerObjs())o.traverse(m=>obs.add(m));list=list.filter(m=>!obs.has(m));
   }else{ndc.set(((ev.clientX-r.left)/r.width)*2-1,-((ev.clientY-r.top)/r.height)*2+1);ray.setFromCamera(ndc,cam);}
+  // firstHitOnly: each part's nearest hit, still ordered over all parts (the clear part in front, then what is behind)
   ray.firstHitOnly=!clipPlanes.length;
   const hits=ray.intersectObjects(list,false);
-  for(const h of hits)if(h.object.userData.key&&clipPlanes.every(p=>p.distanceToPoint(h.point)>=0))return h;
-  return null;
+  let first=null,opaque=null;
+  for(const h of hits){
+    if(!h.object.userData.key||!clipPlanes.every(p=>p.distanceToPoint(h.point)>=0))continue;
+    if(!first)first=h;
+    if(!seeThrough(h.object)){opaque=h;break;}
+  }
+  if(opaque&&first!==opaque)opaque.through=first;
+  return {first,opaque};
 }
 const pick=ev=>{const h=pickHit(ev);return h?h.object:null;};
 // everything a review pin or the footer needs about one hit: part key and tree path, world and part-local point and
@@ -1263,6 +1297,7 @@ function openComponentMenu(k,x,y,hit=null){
   const pk=parentKey(k);$('solo-group').hidden=!pk;if(pk)lab('solo-group','Solo group ('+nodes.get(pk).obj.name+')');
   $('fit-component').disabled=fishOn();
   $('pin-component').hidden=!R;$('measure-component').hidden=!R||!hit;
+  const th=throughOf(hit);$('clear-component').hidden=!th;if(th)lab('clear-component','Pick the clear part in front: '+nameOf(th.object));
   const fu=R?R.followUpFor(k):null;$('followup-component').hidden=!fu;if(fu)lab('followup-component',`Add follow-up pin (to #${fu.n})`);
   $('scope-component').hidden=!R;if(R){const on=R.inScope(k);lab('scope-component',on?'Remove from scope lock':'Add to scope lock');$('scope-component').querySelector('i').className='ic '+(on?'i-lock-open':'i-lock');}
   componentMenu.hidden=false;
@@ -1270,6 +1305,9 @@ function openComponentMenu(k,x,y,hit=null){
   componentMenu.style.top=Math.max(8,Math.min(y,innerHeight-componentMenu.offsetHeight-8))+'px';
   $('tip').style.display='none';lastMove=null;$('select-component').focus({preventScroll:true});
 }
+// switch the menu to the see-through part the right-click went through (its own Select, Pin, Measure and the rest)
+$('clear-component').onclick=()=>{const h=throughOf(contextHit),x=parseFloat(componentMenu.style.left)||0,y=parseFloat(componentMenu.style.top)||0;
+  if(!h)return closeComponentMenu(true);const k=h.object.userData.key;openComponentMenu(k,x,y,h);};
 $('scope-component').onclick=()=>{const k=contextKey;closeComponentMenu(true);if(R&&k)R.toggleScope(k);};
 // the parent group of a part in the tree (its sub-assembly or module), if it has one
 function parentKey(k){const r=nodes.get(k);if(!r||r.path.length<2)return null;const pk=keyOf(r.path.slice(0,-1));return nodes.has(pk)?pk:null;}
@@ -1308,7 +1346,7 @@ addEventListener('keydown',e=>{
 addEventListener('resize',()=>closeComponentMenu());
 addEventListener('blur',()=>closeComponentMenu());
 document.addEventListener('scroll',()=>closeComponentMenu(),true);
-let down=null,hoverT=0,lastMove=null;
+let down=null,hoverT=0,lastMove=null,lastPointer=null;
 canvas.addEventListener('pointerdown',e=>{
   down={x:e.clientX,y:e.clientY,button:e.button,context:e.button===2||(e.button===0&&e.ctrlKey),moved:false};
   $('tip').style.display='none';
@@ -1327,14 +1365,20 @@ canvas.addEventListener('pointerup',e=>{
   if(h){select(h.object.userData.key);showPick(pickInfo(h));}else clearSel();commit();
 });
 const f1=x=>(+x).toFixed(1);
+const nameOf=m=>m.userData.leaf?m.userData.leaf.name:m.name;
 function showPick(i){
   if(!i){$('pickinfo').textContent='';return;}
   const s=new THREE.Vector3().fromArray(i.bbox.max).sub(new THREE.Vector3().fromArray(i.bbox.min));
   $('pickinfo').textContent=`world ${i.world.map(f1).join(', ')}  local ${i.local.map(f1).join(', ')}  normal ${i.normal_world.map(x=>(+x).toFixed(2)).join(', ')}  box ${[s.x,s.y,s.z].map(f1).join(' x ')} mm`;
 }
 canvas.addEventListener('dblclick',e=>{const m=pick(e);if(m){select(m.userData.key);if(!fishOn())focusKey(m.userData.key);commit();}});
-canvas.addEventListener('pointermove',e=>{lastMove=e;if(down&&Math.hypot(e.clientX-down.x,e.clientY-down.y)>4)down.moved=true;});
-canvas.addEventListener('pointerleave',()=>{lastMove=null;$('tip').style.display='none';});
+canvas.addEventListener('pointermove',e=>{lastMove=e;lastPointer=e;if(down&&Math.hypot(e.clientX-down.x,e.clientY-down.y)>4)down.moved=true;});
+canvas.addEventListener('pointerleave',()=>{lastMove=null;lastPointer=null;$('tip').style.display='none';});
+// Alt pressed or released over the view: hover again at the same spot (the tip says what a click takes now)
+for(const t of ['keydown','keyup'])addEventListener(t,e=>{
+  if(e.key!=='Alt'||!lastPointer)return;
+  const p=lastPointer;lastPointer=lastMove={clientX:p.clientX,clientY:p.clientY,buttons:0,shiftKey:e.shiftKey,altKey:t==='keydown'};hoverT=0;
+});
 // at most one hover pick per 70 ms, none while the camera moves or a button is held (the last pointer position is
 // kept, so the tip catches up once the view settles)
 function hover(now){
@@ -1346,9 +1390,11 @@ function hover(now){
   if((ed&&ed.chain)!==(hoverEdge&&hoverEdge.chain)){hoverEdge=ed;dirty=true;}else if(!ed&&hoverEdge){hoverEdge=null;dirty=true;}
   const m=ed?ed.mesh:h?h.object:null;
   if(!m){tip.style.display='none';canvas.style.cursor='';return;}
-  const r=host.getBoundingClientRect(),nm=m.userData.leaf?m.userData.leaf.name:m.name;
-  tip.textContent=ed?`Edge ${ed.record.length_mm.toFixed(2)} mm on ${nm}`:nm;
-  tip.style.left=(e.clientX-r.left+14)+'px';tip.style.top=(e.clientY-r.top+14)+'px';tip.style.display='block';canvas.style.cursor='pointer';
+  const r=host.getBoundingClientRect(),nm=nameOf(m),th=throughOf(ed?ed.hit:h);
+  tip.textContent=(ed?`Edge ${ed.record.length_mm.toFixed(2)} mm on ${nm}`:nm)+(th&&th.object!==m?` (through ${nameOf(th.object)})`:'');
+  tip.style.display='block';canvas.style.cursor='pointer';
+  // a long tip (a "through" name) flips to the left of the cursor rather than running off the view
+  const tw=tip.offsetWidth,x=e.clientX-r.left;tip.style.left=Math.max(4,x+14+tw>r.width-4?x-14-tw:x+14)+'px';tip.style.top=(e.clientY-r.top+14)+'px';
 }
 
 // ---- feature-edge pick (mesh level): the segments of the Edges display. A pick is the segment nearest the cursor
@@ -1436,7 +1482,7 @@ function edgeCandidates(m,d,px,py,W,H){
 function pickEdge(ev,hit){
   if(!showEdges||SOFT||fishOn())return null;
   PERF.edgePickCalls++;
-  const key=pickKey(ev);if(edgeMemo&&edgeMemo.hit===hit&&sameKey(edgeMemo.key,key))return edgeMemo.r;
+  const key=pickKey(ev);key.alt=throughWanted(ev);if(edgeMemo&&edgeMemo.hit===hit&&edgeMemo.key.alt===key.alt&&sameKey(edgeMemo.key,key))return edgeMemo.r;
   const r=pickEdgeNow(ev,hit);edgeMemo={key,hit,r};return r;
 }
 function pickEdgeNow(ev,hit){
@@ -1445,10 +1491,12 @@ function pickEdgeNow(ev,hit){
   cam.updateMatrixWorld();_vp.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);
   const fwd=cam.getWorldDirection(new THREE.Vector3()),depth=p=>_ec.copy(p).sub(cam.position).dot(fwd);
   const hitDepth=hit?depth(hit.point):Infinity,tol=Math.max(0.3,0.004*radius);
+  // picking through clear parts: with an opaque face under the cursor, a see-through part's edges are not candidates
+  const skipClear=throughWanted(ev)&&!!hit&&!seeThrough(hit.object);
   const pxPerMm=p=>cam.isOrthographicCamera?H*cam.zoom/(cam.top-cam.bottom):H/(2*Math.max(1e-6,depth(p))*Math.tan(cam.fov*D2R/2));
   let best=null;
   for(const m of meshList){
-    if(!effVisible(m))continue;const d=edgeData(m);if(!d||!d.obj.visible)continue;
+    if(!effVisible(m)||(skipClear&&seeThrough(m)))continue;const d=edgeData(m);if(!d||!d.obj.visible)continue;
     if(!m.geometry.boundingSphere)m.geometry.computeBoundingSphere();
     _es.copy(m.geometry.boundingSphere).applyMatrix4(m.matrixWorld);_ec.copy(_es.center).applyMatrix4(_vp);
     if(Math.hypot((_ec.x*0.5+0.5)*W-px,(0.5-_ec.y*0.5)*H-py)>_es.radius*pxPerMm(_es.center)+EDGE_PX)continue;
@@ -1470,7 +1518,7 @@ function pickEdgeNow(ev,hit){
   if(!best)return null;
   const ch=edgeChain(edgeData(best.mesh),best.seg);
   return {mesh:best.mesh,world:best.world,local:best.local,chain:ch,record:ch.record,px:best.d,
-    hit:{object:best.mesh,point:best.world,face:hit&&hit.object===best.mesh?hit.face:null}};
+    hit:{object:best.mesh,point:best.world,face:hit&&hit.object===best.mesh?hit.face:null,through:hit&&hit.object===best.mesh?throughOf(hit):null}};
 }
 // edges drawn over the view (screen-space SVG, so they read on every background): the hovered edge, open edge pins
 // in their pin colour and the edge of the pin being edited; sendPacket draws the same lines into the screenshot
@@ -1500,6 +1548,80 @@ function drawEdgeOverlay(){
       if(q){const t=document.createElementNS(SVGNS,'text');t.setAttribute('x',(q[0][0]+8).toFixed(1));t.setAttribute('y',(q[0][1]-8).toFixed(1));
         t.setAttribute('class','edge-label'+mod);if(o.pin)t.dataset.pin=o.pin;t.textContent=o.label;g.append(t);}}
   }
+}
+// ---- review focus (the change tour): the parts a stop is about stay as they are and every other part fades to
+// FOCUS_FADE opacity. It is a look, not a visibility change: no tree checkbox moves, nothing enters the undo history,
+// and the original material values come back exactly when focus ends. The stop's parts get their crease edges drawn
+// on top in the tour colour (the outline). Faded parts count as see-through, so picks reach the stop's parts. ----
+const FOCUS_FADE=0.1,focusOrig=new Map();let focusKeys=null,focusLines=[];
+function focusMats(m){const out=Array.isArray(m.material)?[...m.material]:[m.material];for(const c of m.children)if(c.userData.cadEdge&&c.material)out.push(c.material);return out;}
+function setFocus(keys){
+  for(const [mat,o] of focusOrig){mat.opacity=o.opacity;mat.transparent=o.transparent;mat.depthWrite=o.depthWrite;mat.needsUpdate=true;}
+  focusOrig.clear();
+  for(const l of focusLines){l.removeFromParent();l.geometry.dispose();l.material.dispose();}focusLines=[];
+  const leaves=new Set();for(const k of keys||[])for(const l of (nodes.get(k)?.leaves||[k]))leaves.add(l);
+  focusKeys=leaves.size?leaves:null;
+  if(focusKeys)for(const m of meshList){
+    if(focusKeys.has(m.userData.key)){
+      const g=edgesGeometry(m,edgeAngleOf(m));if(!g)continue;
+      const l=new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:0xeab308,transparent:true,opacity:0.95,depthTest:false,depthWrite:false,clippingPlanes:clipPlanes}));
+      l.name='Tour outline';l.userData.focusOutline=true;l.renderOrder=24;l.raycast=()=>{};m.add(l);focusLines.push(l);continue;
+    }
+    for(const mat of focusMats(m)){
+      if(focusOrig.has(mat))continue;focusOrig.set(mat,{opacity:mat.opacity,transparent:mat.transparent,depthWrite:mat.depthWrite});
+      mat.opacity=Math.min(mat.opacity,FOCUS_FADE);mat.transparent=true;mat.depthWrite=false;mat.needsUpdate=true;
+    }
+  }
+  pickMemo=null;edgeMemo=null;dirty=true;
+}
+const inFocus=k=>!focusKeys||focusKeys.has(k);
+// see-through as the part is drawn without the focus fade (what really hides what)
+function clearUnfaded(m){
+  const mats=Array.isArray(m.material)?m.material:[m.material];
+  return mats.every(x=>{const o=focusOrig.get(x)||x;return (o.transparent&&o.opacity<CLEAR_OPACITY)||(x.transmission||0)>0;});
+}
+// share of sample points on the parts `keys` that a camera looking along -dir sees (opaque other parts hide them)
+const _vc=new THREE.Raycaster();_vc.firstHitOnly=false;
+function viewClearance(keys,dir){
+  const leaves=new Set();for(const k of keys)for(const l of (nodes.get(k)?.leaves||[k]))leaves.add(l);
+  const parts=meshList.filter(m=>leaves.has(m.userData.key)&&effVisible(m));if(!parts.length)return 0;
+  const list=meshList.filter(m=>effVisible(m)&&!prepPending.has(m.geometry)),far=Math.max(100,radius*4),pts=[],v=new THREE.Vector3();
+  scene.updateMatrixWorld();
+  const per=Math.max(6,Math.floor(48/parts.length));
+  for(const m of parts){const p=m.geometry.attributes.position,step=Math.max(1,Math.floor(p.count/per));
+    for(let i=0;i<p.count&&pts.length<200;i+=step)pts.push(v.fromBufferAttribute(p,i).applyMatrix4(m.matrixWorld).clone());}
+  const d=dir.clone().normalize();let seen=0;
+  for(const q of pts){
+    _vc.set(q.clone().addScaledVector(d,far),d.clone().negate());_vc.far=far-Math.max(0.05,radius*1e-4);
+    let hidden=false;
+    for(const h of _vc.intersectObjects(list,false)){
+      if(leaves.has(h.object.userData.key)||clearUnfaded(h.object))continue;
+      if(!clipPlanes.every(p=>p.distanceToPoint(h.point)>=0))continue;
+      hidden=true;break;
+    }
+    if(!hidden)seen++;
+  }
+  return pts.length?seen/pts.length:0;
+}
+// fit the camera to the parts `keys` (margin as Fit sel), looking along the current direction unless at most half of
+// the parts' sample points would be seen from it; then the clearest of the six axis views. dir: a preferred
+// direction (a stop's own camera). Animated. Returns {dir, axis, seen}.
+const AXES=[['+X',[1,0,0]],['-X',[-1,0,0]],['+Y',[0,1,0]],['-Y',[0,-1,0]],['+Z',[0,0,1]],['-Z',[0,0,-1]]];
+function fitParts(keys,dir=null,animate=true){
+  const b=new THREE.Box3();for(const k of keys){const r=nodes.get(k);if(r)b.expandByObject(r.obj);}
+  if(b.isEmpty())return null;
+  bakeOrbit();
+  let d=(dir?dir.clone():cam.position.clone().sub(camTarget())).normalize(),axis=null,seen=viewClearance(keys,d);
+  if(seen<=0.5){
+    let best=null;
+    for(const [n,a] of AXES){const ad=new THREE.Vector3(...a),s=viewClearance(keys,ad),score=s+0.01*ad.dot(d);if(!best||score>best.score)best={n,ad,s,score};}
+    if(best&&best.s>seen){d=best.ad;axis=best.n;seen=best.s;}
+  }
+  const c=b.getCenter(new THREE.Vector3()),r=Math.max(2,b.getBoundingSphere(new THREE.Sphere()).radius)*1.25;
+  if(axis){cam.up.set(0,0,1);if(Math.abs(d.z)>0.99){cam.up.set(0,1,0);}}
+  const p=cam.isOrthographicCamera?c.clone().addScaledVector(d,Math.max(2000,r*6)):c.clone().addScaledVector(d,r/Math.tan(cam.fov*Math.PI/360));
+  placeCam(p,c,cam.isOrthographicCamera?OB/r:null,animate&&!SOFT);
+  return {dir:d.toArray(),axis,seen};
 }
 // ---- undo / redo: one history of committed state (visibility, section, explode, selection, camera buttons,
 // projection, movable group pose). Orbit drags are not in it; a camera snapshot is only restored when the step
@@ -1805,7 +1927,7 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
   get cam(){return cam;},get meshList(){return meshList;},get modelRoot(){return modelRoot;},get M(){return M;},get sel(){return sel;},
   get bbox(){return bbox;},get ready(){return ready;},get restoring(){return restoring;},
   setLeftAction:a=>{leftAction=a==='none'?ACT.NONE:ACT.ROTATE;mouseMap();},
-  pickHit,pickInfo,pickEdge,edgeScreen,featureChains,get loadedMtime(){return loadedMtime;},partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
+  pickHit,pickOpaque,seeThrough,pickInfo,pickEdge,setFocus,inFocus,focusActive:()=>!!focusKeys,fitParts,viewClearance,restoreCam,edgeScreen,featureChains,get loadedMtime(){return loadedMtime;},partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
   dirty:()=>{dirty=true;},renderNow:()=>{if(!SOFT)renderNow();},soft:SOFT,
   camera:()=>{const c=snapCam();return {projection:c.proj==='o'?'ortho':'persp',position:c.p,target:c.t,up:c.u,zoom:c.z,view:c.v,fov:cam.isPerspectiveCamera?cam.fov:null};},
   hiddenKeys:()=>[...vis].filter(([,v])=>!v).map(([k])=>k),
@@ -1819,14 +1941,15 @@ window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clear
   edgeAt:(x,y,o={})=>{const e={clientX:x,clientY:y};edgeLinear=!!o.linear;try{const ed=pickEdgeNow(e,pickHitNow(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px,seg:ed.seg}:null;}finally{edgeLinear=false;}},
   get perf(){const r=prepRun;return {...PERF,prepDone:r?r.done:0,prepTotal:r?r.total:0,frame:frameNo};},
   edgeChains:k=>{let m=null;nodes.get(k)?.obj.traverse(o=>{if(!m&&o.isMesh)m=o;});return m?featureChains(m).map(c=>c.record):[];},
-  get hoverEdge(){return hoverEdge?{key:hoverEdge.mesh.userData.key,length:hoverEdge.record.length_mm}:null;},pickAt:(x,y)=>{const h=pickHit({clientX:x,clientY:y});const i=pickInfo(h);if(i)delete i.mesh;return i;},
+  get hoverEdge(){return hoverEdge?{key:hoverEdge.mesh.userData.key,length:hoverEdge.record.length_mm}:null;},pickAt:(x,y,o={})=>{const h=pickHit({clientX:x,clientY:y,altKey:!!o.alt});const i=pickInfo(h);if(i){delete i.mesh;const t=throughOf(h);i.through=t?t.object.userData.key:null;}return i;},
+  seeThrough:k=>{let m=null;nodes.get(k)?.obj.traverse(o=>{if(!m&&o.isMesh)m=o;});return m?seeThrough(m):null;},
   home:()=>camAction(goHome),fitSelection:()=>camAction(fitSelection),setSides:v=>{setSides(v);commit();},
   applyView:n=>camAction(()=>applyView(VIEWS.find(v=>v.name===n))),
   // camera view: the parts a lens ray at client (x, y) passes, nearest first, transparent ones marked
   lensHits:(x,y)=>{if(!fishOn())return null;const d=fishDir({clientX:x,clientY:y});if(!d)return [];ray.set(new THREE.Vector3(...camMode.eye),d);
     const obs=new Set();for(const o of observerObjs())o.traverse(m=>obs.add(m));
     return ray.intersectObjects(meshList.filter(m=>effVisible(m)&&!obs.has(m)),false).slice(0,6).map(h=>(h.object.userData.leaf?h.object.userData.leaf.component:h.object.name)+(h.object.material.transparent?' (clear)':'')+' @'+h.distance.toFixed(1));},
-  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,up:cam.up.toArray(),screenUp:(cam.updateMatrixWorld(),new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1).toArray()),orbitMode:OPTS.orbit,pivotMode:OPTS.pivot,
+  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,up:cam.up.toArray(),screenUp:(cam.updateMatrixWorld(),new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1).toArray()),orbitMode:OPTS.orbit,pivotMode:OPTS.pivot,pickThrough:OPTS.through!==false,focus:focusKeys?{parts:focusKeys.size,faded:meshList.filter(m=>!focusKeys.has(m.userData.key)).length,outlines:focusLines.length}:null,
     pivot:pivotFor(null)?.toArray()||null,viewCentre:viewCentre()?.toArray()||null,pivotShown:pivotObj.visible,pivotAt:pivotObj.visible?pivotObj.position.toArray():null,
     hidden:[...vis].filter(([,v])=>!v).map(([k])=>k),clip:clipPlanes.map(p=>[p.normal.toArray(),p.constant]),
     explode:+$('explode').value,grid:showGrid,view:activeView,cameraView:camMode?camMode.name:null,fov:cam.isPerspectiveCamera?cam.fov:null,
@@ -1839,6 +1962,7 @@ async function poll(){
   if(busy)return;busy=true;clearTimeout(retryTimer);
   try{
     status=await (await fetch('/status.json?ts='+Date.now())).json();
+    window.__viewerStale?.check(status);                // a stale server (index.html): new files on disk since it started
     if(status.sig!==loadedSig){
       try{await loadModel(status);}
       catch(e){if(loadedSig===null)$('status').textContent='loading... ('+e.message+', retrying)';console.warn('load',e.message);retryTimer=setTimeout(poll,1000);}

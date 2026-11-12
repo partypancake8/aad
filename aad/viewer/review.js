@@ -92,6 +92,8 @@ export function initReview(V){
     if(RP?.onKey(e))return true;
     if(e.key==='Escape'){
       if(!card.hidden){closeDialog();return true;}
+      if(clearEvidence())return true;
+      if(tourExit())return true;
       if(revSel||revPeek){holoOff();return true;}
       if(measA){measA=null;clearMeasDraft();return true;}
       if(mode!=='select'){setMode('select');return true;}
@@ -464,6 +466,8 @@ export function initReview(V){
     for(const [id,o] of markers){
       const vis=o.userData.key?V.effVisible(o.parent):o.userData.keys?o.userData.keys.some(k=>V.leafShown(k)):true;
       o.visible=vis&&show;o.userData.partShown=vis;
+      const fd=tourOn&&V.focusActive()&&!(o.userData.key?V.inFocus(o.userData.key):o.userData.keys?o.userData.keys.some(k=>V.inFocus(k)):true);
+      if(o.element.classList.contains('faded')!==fd)o.element.classList.toggle('faded',fd);
       if(!!partHidden.get(id)!==!vis){partHidden.set(id,!vis);
         const c=document.querySelector(`#pin-list li[data-pin="${id}"] .chip.parthidden`);if(c)c.hidden=vis;}
     }
@@ -566,8 +570,8 @@ export function initReview(V){
   }
   function showPins(){if(!pinsShown)setPinsShown(true);}
   $('pins-vis').onclick=()=>setPinsShown(!pinsShown);$('pins-show').onclick=()=>setPinsShown(true);
-  // A pin whose point is behind other visible geometry from the current camera draws dimmed with a dashed ring (the
-  // selected pin stays solid). One BVH ray per point pin when the view settles; with few pins also while it moves.
+  // A pin whose point is behind other visible opaque geometry from the current camera draws dimmed with a dashed ring
+  // (the selected pin stays solid; see-through parts do not count). One BVH ray per point pin when the view settles; with few pins also while it moves.
   const OCC_LIVE_MAX=24,OCC_SETTLE_MS=180,OCC_LIVE_MS=120;
   let occSig='',occAt=0,occTimer=0,occRuns=0;
   const _o=new THREE.Vector3(),_h=new THREE.Vector3();
@@ -603,7 +607,8 @@ export function initReview(V){
       if(o.visible&&o.userData.key&&r.width>0){
         o.getWorldPosition(_o);const p=_o.clone().project(c);
         if(p.z>=-1&&p.z<=1&&Math.abs(p.x)<=1&&Math.abs(p.y)<=1){
-          const h=V.pickHit({clientX:r.left+(p.x+1)/2*r.width,clientY:r.top+(1-p.y)/2*r.height});
+          // see-through parts (clear panels, an acrylic tube) never hide a pin: the nearest opaque hit decides
+          const h=V.pickOpaque({clientX:r.left+(p.x+1)/2*r.width,clientY:r.top+(1-p.y)/2*r.height});
           if(h){const da=-_o.clone().applyMatrix4(c.matrixWorldInverse).z,dh=-_h.copy(h.point).applyMatrix4(c.matrixWorldInverse).z;occ=dh<da-eps;}
         }
       }
@@ -978,7 +983,7 @@ export function initReview(V){
     $('diff-out').innerHTML='<p class="hint">Comparing...</p>';
     try{diff=await getJSON('/review/diff.json?against='+encodeURIComponent(against));}
     catch(e){$('diff-out').innerHTML=`<p class="hint">${esc(e.message)}</p>`;return null;}
-    diffByNode=new Map(diff.parts.map(r=>[r.name,r]));
+    diffByNode=new Map(diff.parts.map(r=>[r.name,r]));clearEvidence();
     if(diff.reopened?.length){await loadState(true);rerender();toast(`${diff.reopened.length} resolved pin(s) reopened: their part changed again.`,true);}
     renderDiff(auto);V.retint();
     if($('diff-ghost').checked)await loadGhost(against);
@@ -1004,13 +1009,87 @@ export function initReview(V){
       h+=`<li class="item" data-part="${esc(r.name)}"><div class="r1"><span class="chip ${r.status}">${r.status}</span>${r.collateral?'<span class="chip collateral">COLLATERAL</span>':''}${r.in_scope?'<span class="chip added">in scope</span>':''}
         <span class="cls">${esc(k?(V.nodes.get(k).leaf?.name||r.name):r.name)}</span></div>
         ${d?`<div class="where">centroid shift ${d.distance.toFixed(2)} mm, volume ${d.volume>=0?'+':''}${d.volume.toFixed(1)} mm3, triangles ${d.tris>=0?'+':''}${d.tris}</div>`:''}
-        ${r.warnings.map(w=>`<div class="where"><span class="chip warn">${esc(w.kind.replace('_',' '))}</span> ${esc(w.message)}</div>`).join('')}</li>`;
+        ${r.warnings.map((w,i)=>`<div class="warnrow${evSel===r.name+'|'+i?' on':''}" data-warn="${esc(r.name)}|${i}" role="button" tabindex="0" title="Show where: fly to it, select the part and mark the evidence"><span class="chip warn">${esc(w.kind.replace('_',' '))}</span>${w.hint?'<span class="chip hint">mesh hint</span>':''}<span class="wmsg">${esc(w.message)}</span><button class="wpin" data-wpin="${esc(r.name)}|${i}" title="Drop a ${esc(label(WARN_CLASS[w.kind]||'weird_geometry'))} pin here"><i class="ic i-map-pin"></i>Pin this</button></div>`).join('')}</li>`;
     }
     h+='</ol>';
-    if(diff.warnings.length)h+=`<p class="hint">Detector warnings are hints from the meshes, not errors.</p>`;
+    if(diff.warnings.length)h+=`<p class="hint">Detector warnings are hints from the meshes, not errors. Click one to see where it is.</p>`;
     out.innerHTML=h;
+    out.querySelectorAll('[data-warn]').forEach(el=>{
+      const go=e=>{e.stopPropagation();const [n,i]=splitWarn(el.dataset.warn);showEvidence(n,i);};
+      el.onclick=go;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go(e);}};});
+    out.querySelectorAll('[data-wpin]').forEach(b=>b.onclick=e=>{e.stopPropagation();const [n,i]=splitWarn(b.dataset.wpin);pinWarning(n,i);});
     out.querySelectorAll('[data-part]').forEach(li=>li.onclick=()=>{const k=nk.get(li.dataset.part);if(k){V.select(k);V.camAction(()=>V.focusKey(k));V.commit();}
       else if(diff?.a?.id&&revSel!==diff.a.id)selectRev(diff.a.id);});
+  }
+  // ---- detector evidence: a warning row flies to the spot, selects the part and marks what the detector saw, from
+  // the diff's own evidence (part-local mm, aad.review.detectors): a thin wall's ray origin and far point as two
+  // dots with a dimension line and the measured value, its two triangles tinted; sliver triangles or a loose shell
+  // tinted; a floating part outlined. The marks are children of the part's mesh, so they follow explode and moves.
+  // Pin this opens the pin card at the spot with the matching class and the warning as its note. Esc, another row or a
+  // new diff clears them. ----
+  const WARN_CLASS={thin_feature:'printability',slivers:'weird_geometry',new_components:'weird_geometry',floating:'floating_unsupported',triangle_jump:'weird_geometry'};
+  const evGroup=new THREE.Group();evGroup.name='Detector evidence';let evSel=null,evMesh=null;
+  const splitWarn=s=>{const i=s.lastIndexOf('|');return [s.slice(0,i),+s.slice(i+1)];};
+  const warnOf=(name,i)=>diff?.parts.find(r=>r.name===name)?.warnings?.[i]||null;
+  function clearEvidence(){
+    if(evGroup.parent)evGroup.removeFromParent();
+    for(const o of [...evGroup.children]){o.traverse(x=>{if(x.element)x.element.remove();x.geometry?.dispose();x.material?.dispose?.();});o.removeFromParent();}
+    const had=!!evSel;evSel=null;evMesh=null;document.querySelectorAll('#diff-list .warnrow.on').forEach(e=>e.classList.remove('on'));if(had)V.dirty();return had;
+  }
+  const triGeo=flat=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(flat),3));return g;};
+  function tint(flat,color,opacity=0.55){
+    const m=new THREE.Mesh(triGeo(flat),new THREE.MeshBasicMaterial({color,transparent:true,opacity,side:THREE.DoubleSide,depthTest:false,depthWrite:false}));
+    m.renderOrder=30;m.raycast=()=>{};m.userData.evidence='tint';return m;
+  }
+  function dot(p,cls){const d=document.createElement('div');d.className='measure-dot evidence '+cls;const o=new CSS2DObject(d);o.position.set(...p);o.userData.evidence='dot';return o;}
+  // where the evidence is (part-local box), for the camera
+  function evidenceBox(w){
+    const e=w.evidence||{},b=new THREE.Box3(),v=new THREE.Vector3();
+    const add=f=>{for(let i=0;i+2<f.length;i+=3)b.expandByPoint(v.set(f[i],f[i+1],f[i+2]));};
+    if(e.origin){add(e.origin);add(e.hit);add(e.origin_tri||[]);add(e.hit_tri||[]);}
+    else if(e.tris)add(e.tris);else if(e.corners)add(e.corners);
+    return b;
+  }
+  function showEvidence(name,i){
+    const w=warnOf(name,i),k=nodeKey().get(name);clearEvidence();
+    if(!w||!k){toast('That part is not in this build.',true,2500);return;}
+    const mesh=meshOf(k),e=w.evidence||{};evSel=name+'|'+i;evMesh=mesh;
+    if(e.origin&&e.hit){                                          // thin wall
+      evGroup.add(tint([...(e.origin_tri||[]),...(e.hit_tri||[])],0xff4d4f,0.6));
+      const a=new THREE.Vector3(...e.origin),b=new THREE.Vector3(...e.hit);
+      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]),new THREE.LineBasicMaterial({color:0xffd43b,depthTest:false}));
+      line.renderOrder=31;line.raycast=()=>{};evGroup.add(line,dot(e.origin,'origin'),dot(e.hit,'hit'));
+      const el=document.createElement('div');el.className='measure-anchor';const lb=document.createElement('div');lb.className='measure-label evidence';
+      lb.textContent=`${(+(e.thickness??w.value)).toFixed(2)} mm`;el.append(lb);const lo=new CSS2DObject(el);lo.position.copy(a.clone().add(b).multiplyScalar(0.5));
+      lb.style.translate='12px -50%';evGroup.add(lo);
+    }else if(e.tris?.length)evGroup.add(tint(e.tris,w.kind==='slivers'?0xd946ef:0xff4d4f,0.7));
+    else if(w.kind==='floating'||!e.tris){                        // the part itself: its crease edges, bright and on top
+      const ln=new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry,35),new THREE.LineBasicMaterial({color:0xff4d4f,depthTest:false,transparent:true}));
+      ln.renderOrder=31;ln.raycast=()=>{};evGroup.add(ln);
+    }
+    mesh.add(evGroup);
+    V.select(k);
+    const lb=evidenceBox(w);
+    V.camAction(()=>{if(lb.isEmpty()||w.kind==='floating'||w.kind==='triangle_jump')V.focusKey(k);
+      else{mesh.updateMatrixWorld();const wb=lb.clone().applyMatrix4(mesh.matrixWorld),sz=wb.getSize(new THREE.Vector3()).length();
+        wb.expandByScalar(Math.max(6,sz*0.6));V.focusBox(wb);}});
+    V.commit();
+    document.querySelectorAll('#diff-list .warnrow').forEach(el=>el.classList.toggle('on',el.dataset.warn===evSel));
+    V.dirty();
+  }
+  // Pin this: the pin card at the evidence spot (thin wall: the ray origin on the surface; slivers or a shell: their
+  // largest triangle's centre; floating or a triangle jump: a region pin of the part), class and note filled in
+  function pinWarning(name,i){
+    const w=warnOf(name,i),k=nodeKey().get(name);if(!w||!k){toast('That part is not in this build.',true,2500);return;}
+    if(evSel!==name+'|'+i)showEvidence(name,i);
+    const mesh=meshOf(k),e=w.evidence||{},cls=WARN_CLASS[w.kind]||'weird_geometry',note=`Detector ${w.kind.replace('_',' ')}${w.hint?' (mesh hint)':''}: ${w.message}`;
+    let local=null,nrm=null;
+    if(e.origin){local=new THREE.Vector3(...e.origin);const t=e.origin_tri;if(t?.length===9)nrm=new THREE.Vector3(t[3]-t[0],t[4]-t[1],t[5]-t[2]).cross(new THREE.Vector3(t[6]-t[0],t[7]-t[1],t[8]-t[2])).normalize();}
+    else if(e.tris?.length>=9){const t=e.tris;local=new THREE.Vector3((t[0]+t[3]+t[6])/3,(t[1]+t[4]+t[7])/3,(t[2]+t[5]+t[8])/3);
+      nrm=new THREE.Vector3(t[3]-t[0],t[4]-t[1],t[5]-t[2]).cross(new THREE.Vector3(t[6]-t[0],t[7]-t[1],t[8]-t[2])).normalize();}
+    if(!local){openDialog({kind:'region',keys:[k],issue_class:cls,note,title:'Pin this warning'});return;}
+    mesh.updateMatrixWorld();const world=local.clone().applyMatrix4(mesh.matrixWorld);
+    openDialog({kind:'point',info:V.pickInfo({object:mesh,point:world,face:nrm?{normal:nrm}:null}),issue_class:cls,note,title:'Pin this warning'});
   }
   // the baseline's shapes of every part that is not unchanged, translucent orange (More > Ghost baseline, and the
   // tour's before shapes); the geometry comes from the same revision cache as the hologram
@@ -1024,11 +1103,11 @@ export function initReview(V){
     const parts=await loadRev(against);
     for(const [key,list] of parts){if(!want.has(key))continue;
       for(const {geometry,matrix} of list){const m=new THREE.Mesh(geometry,mat);m.matrixAutoUpdate=false;m.matrix.copy(matrix);m.userData.ghostOf=key;m.raycast=()=>{};ghost.add(m);}}
-    ghostKey=gk;ghost.visible=$('diff-ghost').checked||tourIdx>=0;V.dirty();
+    ghostKey=gk;ghost.visible=$('diff-ghost').checked||tourOn;V.dirty();
   }
   function tintFor(key){
     if(!key)return null;
-    if(tourIdx>=0){const st=server?.tour?.stops?.[tourIdx];if(st&&st.parts.some(p=>p===key||nodeKey().get(p)===key))return {c:C.tour,i:0.6};}
+    if(tourOn&&tourIdx>=0){const st=server?.tour?.stops?.[tourIdx];if(st&&st.parts.some(p=>p===key||nodeKey().get(p)===key))return {c:C.tour,i:0.6};}
     if(mode==='scope'&&inScope(key))return {c:C.scope,i:0.55};
     if(diff&&$('diff-tint').checked){
       const n=V.nodes.get(key)?.leaf?.node,r=n&&diffByNode.get(n);
@@ -1038,41 +1117,79 @@ export function initReview(V){
   }
 
   // ---- tour ----
+  // A stop shows its parts: the camera fits them (view.js fitParts: the current direction, or the clearest axis view
+  // when they would be hidden), every other part fades (a focus look, not a visibility change: no checkbox, no undo
+  // step; pins on faded parts fade too) and the stop's parts are outlined. Show whole model turns the fade off. Leaving
+  // the Tour tab or Esc puts the camera and every opacity back exactly as they were before the tour. Prev and Next
+  // animate. A stop that names no part of this build says so and leaves the camera alone.
+  let tourOn=false,tourCam=null,tourWhole=false,tourInfo=null,tourClampPending=false;
+  const AGENT_ID=/\b(worker|agent|subagent|bot|model|assistant|llm|ai)\b|\d|^[a-z0-9]+(?:[-_.][a-z0-9]+)+$/i;
+  // the tour's author as the page shows it: a human-readable name from the file, else nothing; an agent's internal
+  // identifier (a worker or model id) reads "coding agent"
+  function authorName(a){a=String(a||'').trim();if(!a)return '';return AGENT_ID.test(a)?'coding agent':a;}
+  const stopKeysOf=st=>{const nk=nodeKey();return (st.parts||[]).map(p=>V.nodes.has(p)?p:nk.get(p)).filter(Boolean);};
+  function tourExit(){
+    if(!tourOn)return false;
+    tourOn=false;tourInfo=null;V.setFocus(null);ghostFocus();if(tourCam)V.restoreCam(tourCam);tourCam=null;
+    ghost.visible=$('diff-ghost').checked;renderTour();V.retint();V.dirty();return true;
+  }
+  const NOTE_LINES=6;
+  function clampNotes(root){
+    root.querySelectorAll('.clamp').forEach(el=>{
+      const more=el.nextElementSibling?.classList.contains('more')?el.nextElementSibling:null;if(more)more.remove();
+      if(el.scrollHeight<=el.clientHeight+2)return;
+      const b=document.createElement('button');b.className='more';b.innerHTML='<i class="ic i-chevron-down"></i>Show more';b.setAttribute('aria-expanded','false');
+      b.onclick=e=>{e.stopPropagation();const open=el.classList.toggle('open');b.classList.toggle('open',open);b.lastChild.textContent=open?'Show less':'Show more';b.setAttribute('aria-expanded',String(open));};
+      el.after(b);
+    });
+  }
   function renderTour(){
     const out=$('tour-out'),t=server?.tour;
     if(!t){out.innerHTML='<p class="hint">No tour for this build. An agent writes one with <code>aad review tour-template</code> and saves it as .cadreview/tour.json.</p>';$('tour-count').textContent='';return;}
     const done=Object.keys(S.decisions).length;$('tour-count').textContent=`${done}/${t.stops.length}`;
-    let h=`<div class="paneh">${esc(t.title||'Agent change tour')} <span class="muted">${esc(t.author||'')}</span></div>`;
+    const au=authorName(t.author);
+    let h=`<div class="paneh">${esc(t.title||'Agent change tour')}${au?` <span class="muted tour-author">by ${esc(au)}</span>`:''}</div>`;
     if(server.tour_for==='other')h+=`<div class="banner">This tour was written for build ${esc(t.build)}; the current build is ${esc(server.build)}.</div>`;
     const st=t.stops[tourIdx];
     if(st){
-      const dec=S.decisions[st.id];
+      const dec=S.decisions[st.id],nparts=stopKeysOf(st).length;
       h+=`<div class="item sel"><div class="r1"><b>Stop ${tourIdx+1} of ${t.stops.length}</b><span class="chip ${st.kind||''}">${esc(st.kind||'change')}</span>${dec?`<span class="chip ${dec.decision}">${dec.decision}</span>`:''}</div>
-        <div class="note">${esc(st.note)}</div><div class="where">${esc(st.parts.join(', '))}</div>
+        <div class="note clamp" style="--lines:${NOTE_LINES}">${esc(st.note)}</div><div class="where">${esc(st.parts.join(', '))}</div>
+        ${nparts?`<label class="tour-whole" title="Show every part at full opacity; the camera stays"><input type="checkbox" id="tour-whole"${tourWhole?' checked':''}> Show whole model</label>`:
+          `<div class="banner tour-noparts">This stop names no part of this build, so the view stays where it is.</div>`}
         <div class="row2"><button id="tour-prev"><i class="ic i-chevron-left"></i>Prev</button><button id="tour-next">Next<i class="ic i-chevron-right"></i></button>
-        <span class="grow"></span><button id="tour-accept" class="primary"><i class="ic i-circle-check"></i>Accept</button><button id="tour-reject"><i class="ic i-circle-x"></i>Reject</button><button id="tour-repin" class="danger" title="Repin: this stop is presented as done but something is still wrong; click the spot that is wrong now"><i class="ic i-map-pin-exclamation"></i>Repin</button></div></div>`;
+        <span class="grow"></span><button id="tour-accept" class="primary"><i class="ic i-circle-check"></i>Accept</button><button id="tour-reject"><i class="ic i-circle-x"></i>Reject</button><button id="tour-repin" class="danger" title="Repin: this stop is presented as done but something is still wrong; click the spot that is wrong now"><i class="ic i-map-pin-exclamation"></i>Repin</button></div>
+        ${tourOn?'<div class="hint tour-esc">Esc or another tab puts the view back as it was before the tour.</div>':''}</div>`;
     }else h+=`<div class="row2"><button id="tour-start" class="primary"><i class="ic i-player-play"></i>Start tour</button></div>`;
-    h+='<ol>'+t.stops.map((s,i)=>{const d=S.decisions[s.id];return `<li class="item${i===tourIdx?' sel':''}" data-stop="${i}"><div class="r1"><b>${i+1}</b><span class="cls">${esc(s.parts.join(', '))}</span>${d?`<span class="chip ${d.decision}">${d.decision}</span>`:''}</div><div class="where">${esc(s.note)}</div></li>`;}).join('')+'</ol>';
+    h+='<ol>'+t.stops.map((s,i)=>{const d=S.decisions[s.id];return `<li class="item${i===tourIdx?' sel':''}" data-stop="${i}"><div class="r1"><b>${i+1}</b><span class="cls">${esc(s.parts.join(', ')||'no parts')}</span>${d?`<span class="chip ${d.decision}">${d.decision}</span>`:''}</div><div class="where clamp" style="--lines:${NOTE_LINES}">${esc(s.note)}</div></li>`;}).join('')+'</ol>';
     out.innerHTML=h;
     const on=(id,f)=>{const b=$(id);if(b)b.onclick=f;};
     on('tour-start',()=>goStop(0));on('tour-prev',()=>goStop(Math.max(0,tourIdx-1)));on('tour-next',()=>goStop(Math.min(t.stops.length-1,tourIdx+1)));
     on('tour-accept',()=>decide('accept'));on('tour-reject',()=>decide('reject'));
     on('tour-repin',()=>{const st=t.stops[tourIdx];if(st)RP.start(RP.stopPin(st),st);});
+    const wb=$('tour-whole');if(wb)wb.onchange=()=>{tourWhole=wb.checked;const st=t.stops[tourIdx];if(tourOn&&st)V.setFocus(tourWhole?null:stopKeysOf(st));ghostFocus();V.dirty();};
     out.querySelectorAll('[data-stop]').forEach(li=>li.onclick=()=>goStop(+li.dataset.stop));
+    if(!$('tab-tour').hidden)clampNotes(out);else tourClampPending=true;
   }
   async function goStop(i){
-    const t=server?.tour;if(!t||!t.stops[i])return;tourIdx=i;const st=t.stops[i],nk=nodeKey();
-    const keys=st.parts.map(p=>V.nodes.has(p)?p:nk.get(p)).filter(Boolean);
-    V.camAction(()=>{
-      if(st.camera)V.flyToPoint(st.camera.target);
-      else if(keys.length){const b=boxOf(keys);if(!b.isEmpty())V.focusBox(b);}
-    });
-    if(keys.length)V.select(keys[0]);V.commit();
+    const t=server?.tour;if(!t||!t.stops[i])return;
+    if(!tourOn){tourCam=V.snapCam();tourOn=true;}
+    tourIdx=i;const st=t.stops[i],keys=stopKeysOf(st);
+    if(keys.length){
+      const d=st.camera?new THREE.Vector3(...st.camera.eye).sub(new THREE.Vector3(...st.camera.target)):null;
+      tourInfo=V.fitParts(keys,d&&d.lengthSq()>0?d:null,true);
+      V.setFocus(tourWhole?null:keys);
+    }else{tourInfo=null;V.setFocus(null);}
     renderTour();V.retint();
     if(st.ghost!==false){
       const bl=diff?.a?.id||(server.baselines[0]&&server.baselines[0].id);
-      if(bl){if(!diff)await runDiff(bl);await loadGhost(bl);ghost.visible=true;V.dirty();}
+      if(bl){if(!diff)await runDiff(bl);await loadGhost(bl);ghost.visible=tourOn;ghostFocus();V.dirty();}
     }
+  }
+  // in focus, the baseline ghost shows the stop's own parts only (the rest would cover the view in orange)
+  function ghostFocus(){
+    const st=tourOn&&!tourWhole?server?.tour?.stops?.[tourIdx]:null,names=st?new Set(stopKeysOf(st).map(k=>V.nodes.get(k)?.leaf?.node).filter(Boolean)):null;
+    for(const g of ghost.children)g.visible=!names||names.has(g.userData.ghostOf);
   }
   function decide(d){
     const st=server.tour.stops[tourIdx];if(!st)return;
@@ -1092,7 +1209,8 @@ export function initReview(V){
 
   // ---- tabs ----
   function showTab(t){document.querySelectorAll('#tabs button').forEach(b=>{b.classList.toggle('on',b.dataset.tab===t);if(b.dataset.tab===t&&$('tabs').dataset.fit==='3')b.scrollIntoView({block:'nearest',inline:'nearest'});});
-    for(const n of ['pins','diff','tour','issues'])$('tab-'+n).hidden=n!==t;}
+    for(const n of ['pins','diff','tour','issues'])$('tab-'+n).hidden=n!==t;
+    if(t!=='tour')tourExit();else if(tourClampPending){tourClampPending=false;clampNotes($('tour-out'));}}
   document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
   // the tab row never clips a label: it steps down until everything fits (0 icons and labels, 1 labels only,
   // 2 short labels and tighter padding, 3 the same row scrolling sideways with a fade on the cut edge)
@@ -1164,6 +1282,7 @@ export function initReview(V){
   async function onModel(first){
     try{await loadState(first);}catch(e){console.warn('review state',e.message);return;}
     rerender();
+    if(tourOn){const st=server?.tour?.stops?.[tourIdx];V.setFocus(st&&!tourWhole?stopKeysOf(st):null);}   // the reloaded meshes get the focus look again
     const def=(server.baselines||[])[0],rv=reviewedChoice();
     // the default revision is preselected and compared, but its hologram stays off until he clicks it
     if(!first&&def){revPre=def.id;await runDiff(def.id,true);showTab('diff');renderBaselines();}
@@ -1189,7 +1308,7 @@ export function initReview(V){
     if(pinsShown||forceShow)for(const p of S.pins){if(p.kind!=='edge'||!p.edge||p.status==='resolved'||!p.anchor)continue;const k=keyFor(p.anchor.part);
       if(!k)continue;const m=edgeMatch(p),cls='sev-'+p.severity+' g-'+groupOf(classes,p.issue_class);
       if(m?.changed){if(oldEdgeShown(p))out.push({mesh:meshOf(k),pts:p.edge.points,cls,mod:'stale',pin:p.id,label:'edge as pinned',at:p.edge.midpoint||p.edge.points[0]});}
-      else out.push({mesh:meshOf(k),pts:m?m.pts:p.edge.points,cls,pin:p.id,mod:occludedNow(p.id)?'occluded':''});}
+      else out.push({mesh:meshOf(k),pts:m?m.pts:p.edge.points,cls,pin:p.id,mod:[occludedNow(p.id)?'occluded':'',tourOn&&V.focusActive()&&!V.inFocus(k)?'faded':''].filter(Boolean).join(' ')});}
     if(!card.hidden&&dialogCtx?.kind==='edge'&&dialogCtx.info.mesh)out.push({mesh:dialogCtx.info.mesh,pts:dialogCtx.edge.points,cls:'draft'});
     if(mode==='measure'&&measA?.type==='edge')out.push({mesh:measA.mesh,pts:measA.chain.pts,cls:'draft'});
     return out;
@@ -1200,11 +1319,14 @@ export function initReview(V){
     return {open:true,kind:dialogCtx?.kind,card:{x:cr.x,y:cr.y,w:cr.width,h:cr.height},
       point:anchorPx?{x:hr.x+anchorPx.x,y:hr.y+anchorPx.y}:null,dragged:!!cardOffset};
   }
-  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,setPinsShown,pinsShown:()=>pinsShown,onLargeMode:()=>{holoKey='';if(revPeek||revSel)showHolo(revPeek||revSel);},afterRender:()=>{placeCard();holoTheme();drawLeaders();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
+  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,setPinsShown,pinsShown:()=>pinsShown,onLargeMode:()=>{holoKey='';if(revPeek||revSel)showHolo(revPeek||revSel);},afterRender:()=>{placeCard();holoTheme();drawLeaders();},selectRev,holoOff,setFlick,showEvidence,tourExit,clearEvidence,pinWarning,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
     state:()=>({mode,followParent,repin:RP.state(),pins:S.pins.map(p=>({id:p.id,n:p.n,status:p.status,issue_class:p.issue_class,group:groupOf(classes,p.issue_class),repinned:RP.isRepinned(p),history:(p.history||[]).length,kind:p.kind,parts:p.parts.length,orphaned:orphaned(p),measure:!!p.measure,parent:p.parent||null,attempts:p.attempts||0,edgeChanged:edgeChanged(p),oldEdge:p.kind==='edge'?oldEdgeShown(p):null})),
       pinChanges:pinChanges?{against:pinChanges.against,unchanged:Object.keys(pinChanges.pins||{}).filter(id=>{const p=S.pins.find(x=>x.id===id);return p&&unchangedHere(p);})}:null,
-      next:S.next,scope:S.scope.map(p=>p.node),measurements:S.meas.map(m=>m.distance),measureKinds:S.meas.map(m=>m.kind||'point_point'),measPending:measA?measA.type:null,measKeep:keepVis,decisions:S.decisions,tourIdx,
+      next:S.next,scope:S.scope.map(p=>p.node),measurements:S.meas.map(m=>m.distance),measureKinds:S.meas.map(m=>m.kind||'point_point'),measPending:measA?measA.type:null,measKeep:keepVis,decisions:S.decisions,tourIdx,tour:{on:tourOn,whole:tourWhole,info:tourInfo,author:server?.tour?authorName(server.tour.author):null,faded:[...markers.values()].filter(o=>o.element.classList.contains('faded')).length},
       diff:diff?{against:diff.a.id,kind:diff.a.kind||null,b:diff.b.build,summary:diff.summary,collateral:diff.collateral,tinted:V.meshList.filter(m=>tintFor(m.userData.key)).length}:null,
+      evidence:evSel?{warn:evSel,marks:evGroup.children.map(o=>o.userData.evidence||o.type),dots:evGroup.children.filter(o=>o.userData.evidence==='dot').length,
+        label:evGroup.children.map(o=>o.element?.textContent).filter(Boolean).join(' '),tinted:evGroup.children.filter(o=>o.userData.evidence==='tint').reduce((n,o)=>n+o.geometry.attributes.position.count/3,0),
+        part:evMesh?.userData.key||null}:null,
       editor:editorState(),pinsShown,occluded:[...occluded].filter(id=>markers.get(id)?.visible),occRuns,dimOccluded:dimOcc,fanRuns,fanned:[...fan.keys()],partHidden:[...partHidden].filter(([,v])=>v).map(([k])=>k),ghost:ghost.children.length,ghostVisible:ghost.visible,
       revisions:{selected:revSel,preselected:revPre,peek:revPeek,rows:(server?.baselines||[]).map(b=>({id:b.id,kind:b.kind,differ:revRows.find(r=>r.id===b.id)?.differ??null}))},
       holo:{visible:holo.visible,parts:new Set(holo.children.map(o=>o.userData.holoOf)).size,edges:holo.children.filter(o=>o.userData.holo==='edge').length,

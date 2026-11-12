@@ -52,8 +52,8 @@ def page_files():
             r = _resolve(spec, f, imports)
             if r:
                 todo.append(r)
-    from aad.viewer.server import PAGE_FILES                  # every whitelisted page file, favicons included
-    files.update(os.path.join(VIEWER, f) for f in PAGE_FILES)
+    from aad.viewer.server import page_files               # every page file the server serves, favicons included
+    files.update(os.path.join(VIEWER, f) for f in page_files())
     for css in [f for f in files if f.endswith(".css")]:
         if os.path.exists(css):
             for ref in re.findall(r"url\(([^)]+)\)", open(css, encoding="utf-8").read()):

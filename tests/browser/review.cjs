@@ -25,7 +25,9 @@ const arg=(k,d)=>{const i=process.argv.indexOf(k);return i>0?process.argv[i+1]:d
 const URL0=process.argv[2]&&!process.argv[2].startsWith('--')?process.argv[2]:'http://127.0.0.1:7891/';
 const PROJECT=arg('--project'),BASELINE=arg('--baseline'),VIDEO=process.env.VIDEO_DIR,MODEL=arg('--model'),SHOTS=arg('--shots');
 const REPO=path.resolve(__dirname,'..','..'),PY=process.env.AAD_PYTHON||'python3';
-assert(PROJECT,'--project DIR is required (the CAD project whose .cadreview/ the viewer writes)');
+// --only-r10: just the r10 checks on their own synthetic model (no --project needed)
+const ONLY_R10=process.argv.includes('--only-r10');
+if(!ONLY_R10)assert(PROJECT,'--project DIR is required (the CAD project whose .cadreview/ the viewer writes)');
 // never write test pins into a real project: --project (and --model) must be under a temp or scratch directory
 function scratchy(p){
   const real=fs.realpathSync(p),os=require('node:os');
@@ -52,6 +54,7 @@ function validate(file,schema){
 }
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 (async()=>{
+ if(ONLY_R10){await checkClearModel();return;}
  const browser=await chromium.launch({headless:true});
  const checks=[];const ok=c=>{checks.push(c);};
  let context;
@@ -777,6 +780,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await page.close();
  }finally{if(context)await context.close();await browser.close();}
  await checkLargeModel();                         // its own browser, after this one is closed (one browser at a time)
+ await checkClearModel();                         // r10: clear parts, warning evidence, tour focus, stale server (own browser)
 })().catch(e=>{console.error(e);process.exit(1)});
 
 // ======== class groups, keep pins and repin ========
@@ -1848,4 +1852,247 @@ async function largeModel(browser,ok){
     await lp.close();
     ok(`large model ${nParts} parts ${nTris} triangles on ${gl}: first frame ${firstMs} ms, prepared by workers ${prepMs} ms, ${st.segs} edge segments; long tasks while interacting ${JSON.stringify(lt)}, Select pointer moves ${JSON.stringify(ltSel)} (bound ${LONG_MS} ms${soft?' on the pointer moves: software WebGL':''}); ${sweepPicks} edge picks testing ${perPick.toFixed(0)} segments each; bursts pin ${JSON.stringify(pinB)} measure ${JSON.stringify(measB)}`);
   }finally{await ctx.close();srv.kill();fs.rmSync(tmp,{recursive:true,force:true});if(serr&&/Traceback/.test(serr))console.error(serr);}
+}
+
+
+// ======== r10: see-through parts, detector evidence, tour focus, stale server guard ========
+// A synthetic model written with the package's GLB writer: an opaque base plate and block, a clear cover (alpha 0.3,
+// blended) over the block, served by its own viewer. Checks: (1) a click through the clear cover picks the block
+// (Alt picks the cover), the hover tip says "(through ...)", the part menu reaches the cover, a pin dropped through the
+// cover lands on the block and is not drawn as behind geometry, and Options Pick through clear parts off picks the
+// cover again.
+const BOX=(x0,y0,z0,x1,y1,z1)=>[[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]],
+  [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]]];
+// build 2 thins the side wall from 3 mm to 0.3 mm (a thin_feature warning with evidence)
+function writeClearModel(file,build=1){
+  const parts={'base plate':[...BOX(-60,-40,0,60,40,6),[0.55,0.58,0.62]],'block':[...BOX(-10,-10,6,10,10,26),[0.85,0.45,0.2]],
+    'clear cover':[...BOX(-25,-25,6,25,25,46),[0.7,0.85,1.0,0.3]],'side wall':[...BOX(35,-10,6,build===2?35.3:38,10,26),[0.4,0.6,0.45]]};
+  const code=['import sys, json, numpy as np','from aad.review.glb import write_parts',
+    'parts={k:(np.array(v[0],float),np.array(v[1]),v[2]) for k,v in json.loads(sys.argv[2]).items()}','write_parts(sys.argv[1], parts)'].join('\n');
+  const g=spawnSync(PY,['-c',code,file,JSON.stringify(parts)],{encoding:'utf8',env:{...process.env,PYTHONPATH:REPO}});
+  assert.equal(g.status,0,'clear model: '+g.stderr);
+}
+async function checkClearModel(){
+  const browser=await chromium.launch({headless:true,args:['--enable-gpu','--ignore-gpu-blocklist',...(process.platform==='darwin'?['--use-angle=metal']:[])]});
+  const ok=c=>console.log('ok:',c);
+  const os=require('node:os'),tmp=fs.mkdtempSync(path.join(os.tmpdir(),'aad-clear-')),glb=path.join(tmp,'clear.glb'),proj=path.join(tmp,'proj');
+  fs.mkdirSync(proj);writeClearModel(glb);
+  const port=await freePort(),url=`http://127.0.0.1:${port}/`;
+  const srv=require('node:child_process').spawn(PY,[...VIEWER_CMD,glb,'--project',proj,'--port',String(port),'--no-open'],{env:{...process.env,PYTHONPATH:REPO},stdio:['ignore','ignore','pipe']});
+  let serr='';srv.stderr.on('data',d=>{serr+=d;});
+  const ctx=await browser.newContext({viewport:{width:1400,height:900}});
+  try{
+    for(let i=0;i<100;i++){try{const r=await fetch(url+'models.json');if(r.ok)break;}catch(e){}await pause(200);}
+    const page=await ctx.newPage(),errs=[];page.on('pageerror',e=>errs.push(e.message));page.on('console',m=>{if(m.type()==='error')errs.push('console.error: '+m.text());});
+    await page.goto(url);
+    await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});
+    await page.waitForTimeout(800);
+    const C={page,url,proj,glb,tmp,ok,errs,browser};
+    await clearPartsChecks(C);
+    await warningEvidenceChecks(C);
+    await tourFocusChecks(C);
+    await staleServerChecks(C);
+    assert.deepEqual(errs,[],'no page errors on the clear model');
+  }finally{await ctx.close();await browser.close();srv.kill();fs.rmSync(tmp,{recursive:true,force:true});if(serr&&/Traceback/.test(serr))console.error(serr);}
+}
+const keyNamed=(page,name)=>page.evaluate(n=>{for(const [k,r] of viewer.nodes)if(r.leaf&&r.leaf.node===n)return k;return null;},name);
+async function frontView(page,target,dist=400,zoom=2){
+  await page.evaluate(([t,d,z])=>{const k=viewer.controls;k.enableDamping=false;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();
+    k.setLookAt(t[0],t[1]-d,t[2],t[0],t[1],t[2],false);if(viewer.camera.isOrthographicCamera)k.zoomTo(z,false);k.update(0);viewer.commit();},[target,dist,zoom]);
+  await page.waitForTimeout(300);
+}
+async function clearPartsChecks(C){
+  const {page,ok}=C;
+  const block=await keyNamed(page,'block'),cover=await keyNamed(page,'clear cover'),base=await keyNamed(page,'base plate');
+  assert(block&&cover&&base,'synthetic parts are in the tree');
+  assert.equal(await page.evaluate(k=>viewer.seeThrough(k),cover),true,'the alpha 0.3 cover is see-through');
+  assert.equal(await page.evaluate(k=>viewer.seeThrough(k),block),false,'the block is opaque');
+  assert.equal((await page.evaluate(()=>viewer.state().pickThrough)),true,'Pick through clear parts is on by default');
+  await frontView(page,[0,0,20]);
+  const [mid]=await toClient(page,[[0,-10,16]]),[top]=await toClient(page,[[0,-25,40]]);
+  const at=(p,o)=>page.evaluate(([x,y,o])=>viewer.pickAt(x,y,o),[p.x,p.y,o||{}]);
+  let a=await at(mid);
+  assert.equal(a.part.key,block,'a click through the clear cover picks the opaque block behind it');
+  assert.equal(a.through,cover,'and records the cover it went through');
+  a=await at(mid,{alt:true});assert.equal(a.part.key,cover,'Alt picks the clear cover itself');
+  a=await at(top);assert.equal(a.part.key,cover,'with nothing opaque behind, the clear cover is picked');
+  // hover tip names what a click takes
+  await page.mouse.move(mid.x+1,mid.y);await page.waitForTimeout(250);await page.mouse.move(mid.x,mid.y);
+  await page.waitForFunction(()=>{const t=document.getElementById('tip');return t.style.display==='block'&&/through/.test(t.textContent);},null,{timeout:5000});
+  const tip=await page.locator('#tip').textContent();
+  assert.equal(tip,'block (through clear cover)','hover tip: '+tip);
+  await page.keyboard.down('Alt');
+  await page.waitForFunction(()=>document.getElementById('tip').textContent==='clear cover',null,{timeout:5000});
+  await page.keyboard.up('Alt');
+  await page.waitForFunction(()=>document.getElementById('tip').textContent==='block (through clear cover)',null,{timeout:5000});
+  // click selects the block; right-click menu offers the clear part
+  await page.mouse.click(mid.x,mid.y);assert.equal((await page.evaluate(()=>viewer.state().selected)),block,'click selects the block');
+  await page.mouse.click(mid.x,mid.y,{button:'right'});
+  assert.equal(await page.locator('#component-menu-name').textContent(),'block');
+  assert(await page.locator('#clear-component').isVisible(),'the menu offers the clear part in front');
+  assert.match(await page.locator('#clear-component').textContent(),/Pick the clear part in front: clear cover/);
+  await page.locator('#clear-component').click();
+  assert.equal(await page.locator('#component-menu-name').textContent(),'clear cover','the menu now acts on the clear cover');
+  await page.locator('#select-component').click();
+  assert.equal((await page.evaluate(()=>viewer.state().selected)),cover,'Select from that menu selects the cover');
+  // a pin dropped through the cover lands on the block and is not drawn as behind geometry
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=pin]').click();
+  await page.mouse.move(mid.x+40,mid.y+3);await page.mouse.move(mid.x+3,mid.y+3);await page.waitForTimeout(200);
+  await page.mouse.click(mid.x+3,mid.y+3);
+  await page.locator('#pin-dialog').waitFor({state:'visible'});
+  assert.match(await page.locator('#pin-where').textContent(),/^block /,'the pin card names the block, not the cover');
+  await page.locator('#pin-note').fill('pin through the cover');await page.locator('#pin-save').click();
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  const pin=(await page.evaluate(()=>viewer.review.snapshot().p)).slice(-1)[0];
+  assert.equal(pin.anchor.part.node,'block','pins.json records the block');
+  await page.evaluate(()=>viewer.clearSel());await page.evaluate(()=>viewer.commit());
+  await frontView(page,[0,0,20],400,2.05);await page.waitForTimeout(700);
+  const occ=await page.evaluate(id=>({list:viewer.review.state().occluded,cls:document.querySelector(`.pin-marker[data-pin="${id}"]`)?.className||''}),pin.id);
+  assert(!occ.list.includes(pin.id)&&!/occluded/.test(occ.cls),'a pin seen through the clear cover is not drawn as behind geometry: '+JSON.stringify(occ));
+  // from below the plate the same pin is behind opaque geometry and dims
+  await page.evaluate(()=>{const k=viewer.controls;k.setLookAt(0,0,-400,0,0,16,false);k.update(0);viewer.commit();});await page.waitForTimeout(700);
+  assert((await page.evaluate(()=>viewer.review.state().occluded)).includes(pin.id),'behind the opaque base plate the pin still dims');
+  // Options: Pick through clear parts off, remembered; the cover is picked again
+  await frontView(page,[0,0,20]);
+  await page.locator('#options').click();await page.locator('#opt-through').uncheck();await page.keyboard.press('Escape');
+  assert.equal((await at(mid)).part.key,cover,'with the option off the clear cover is picked first');
+  await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});
+  assert.equal(await page.evaluate(()=>viewer.state().pickThrough),false,'the choice is remembered');
+  await page.locator('#options').click();await page.locator('#opt-through').check();await page.keyboard.press('Escape');
+  await frontView(page,[0,0,20]);
+  assert.equal((await at(mid)).part.key,block,'on again: through the cover to the block');
+  ok('clear parts: a click, hover, right-click and pin through the alpha 0.3 cover take the block, Alt or nothing behind takes the cover, the tip says "(through clear cover)", the menu reaches the cover, the pin seen through the cover is not dimmed (it is from below the plate), Options toggle remembered');
+}
+
+// (2) a rebuild thins the side wall: the Revisions tab lists the thin wall warning, a click flies to it, selects the
+// part and marks the evidence (two dots, the dimension label with the value, the two triangles tinted); Pin this opens
+// the pin card there with the Printability class and the warning as the note.
+async function warningEvidenceChecks(C){
+  const {page,ok,glb}=C;
+  const wall=await keyNamed(page,'side wall');
+  const tmp2=glb+'.new.glb';writeClearModel(tmp2,2);fs.renameSync(tmp2,glb);
+  await page.waitForFunction(()=>{const d=viewer.review.state().diff;return d&&d.summary.changed>=1;},null,{timeout:60000});
+  await page.locator('#tabs [data-tab=diff]').click();
+  const row=page.locator('#diff-list .warnrow',{hasText:/wall 0\.30 mm thick/});
+  await row.waitFor({state:'visible',timeout:20000});
+  assert.match(await row.textContent(),/thin feature.*wall 0\.30 mm thick \(baseline 3\.00 mm\).*Pin this/);
+  const cam0=await page.evaluate(()=>viewer.state().target);
+  await row.click();await page.waitForTimeout(900);
+  const ev=await page.evaluate(()=>({e:viewer.review.state().evidence,sel:viewer.state().selected,t:viewer.state().target}));
+  assert(ev.e,'a click on the warning shows its evidence');
+  assert.equal(ev.sel,wall,'and selects the part');
+  assert.equal(ev.e.dots,2,'two dots: the ray origin and its far point');assert.equal(ev.e.label,'0.30 mm','the measured value on the dimension');
+  assert(ev.e.tinted>=2,'the two triangles are tinted');
+  assert(Math.hypot(ev.t[0]-35.15,ev.t[1],ev.t[2]-16)<12&&Math.hypot(...ev.t.map((v,i)=>v-cam0[i]))>5,'the camera flew to the wall: '+JSON.stringify(ev.t));
+  assert(await page.locator('#diff-list .warnrow.on').count()===1,'the row stays marked');
+  // the CSS2D dots are on screen near the wall
+  const dots=await page.evaluate(()=>[...document.querySelectorAll('.measure-dot.evidence')].filter(d=>d.offsetParent!==null&&getComputedStyle(d).display!=='none').length);
+  assert.equal(dots,2,'both evidence dots are drawn');
+  await page.locator('#diff-list .warnrow.on .wpin').click();
+  await page.locator('#pin-dialog').waitFor({state:'visible'});
+  assert.match(await page.locator('#pin-where').textContent(),/^side wall /,'the pin card is on the side wall');
+  assert.equal(await page.locator('#pin-chips button.on').getAttribute('data-class'),'printability','Printability class preselected');
+  assert.match(await page.locator('#pin-note').inputValue(),/Detector thin feature: wall 0\.30 mm thick/);
+  await page.locator('#pin-save').click();
+  const pin=(await page.evaluate(()=>viewer.review.snapshot().p)).slice(-1)[0];
+  assert.equal(pin.anchor.part.node,'side wall');assert.equal(pin.issue_class,'printability');
+  await page.keyboard.press('Escape');await page.waitForTimeout(200);
+  if(await page.evaluate(()=>!!viewer.review.state().evidence)){await page.mouse.move(10,10);await page.keyboard.press('Escape');}
+  assert.equal(await page.evaluate(()=>viewer.review.state().evidence),null,'Esc clears the evidence');
+  // the route itself carries the location data, part-local
+  const dj=await page.evaluate(async()=>{const s=viewer.review.state();const r=await fetch('review/diff.json?against='+encodeURIComponent(s.diff.against));return r.json();});
+  const w=dj.warnings.find(x=>x.part==='side wall'&&x.kind==='thin_feature');
+  assert(w&&w.evidence&&w.evidence.origin.length===3&&w.evidence.hit_tri.length===9,'/review/diff.json carries the evidence');
+  ok(`detector evidence: the thin wall row (${w.message}) flies to the wall, selects it, two dots with the 0.30 mm label, ${ev.e.tinted} triangles tinted; Pin this opened the card with Printability and the warning note; Esc clears; /review/diff.json carries origin, hit and both triangles`);
+}
+
+// (3) the change tour shows each stop's parts: the camera fits them, every other part fades (no checkbox, no undo step),
+// the stop's parts are outlined, pins on faded parts fade; a part hidden behind an opaque one from the current view
+// gets the clearest axis view; Show whole model turns the fade off; a stop with no parts says so and leaves the
+// camera; Esc puts camera and opacity back exactly. The author "opus-worker" reads "coding agent"; a long note
+// collapses with Show more.
+async function tourFocusChecks(C){
+  const {page,ok,proj}=C;
+  const build=await page.evaluate(()=>viewer.review.state().build);
+  const LONG=Array.from({length:30},(_,i)=>`Line ${i+1} of a long stop note that keeps going past the six visible lines.`).join(' ');
+  fs.writeFileSync(path.join(proj,'.cadreview','tour.json'),JSON.stringify({schema:'cadreview/1',build,title:'Focus check',author:'opus-worker',
+    stops:[{id:'s1',parts:['block'],note:LONG,kind:'changed',ghost:false},{id:'s2',parts:['side wall'],note:'Thinned the wall',kind:'changed',ghost:false},
+      {id:'s3',parts:[],note:'General note with no parts',kind:'info',ghost:false}]}));
+  await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});await page.waitForTimeout(800);
+  const block=await keyNamed(page,'block');
+  // look from +X: the opaque side wall hides the block, so the stop must turn to a clearer axis view
+  await page.evaluate(()=>{const k=viewer.controls;k.enableDamping=false;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();k.setLookAt(400,0,16,0,0,16,false);k.update(0);viewer.commit();});
+  await page.waitForTimeout(300);
+  const opac=()=>page.evaluate(()=>viewer.meshes().map(m=>[m.material.opacity,m.material.transparent,m.material.depthWrite]));
+  const before={cam:await page.evaluate(()=>{const s=viewer.state();return {cam:s.cam,target:s.target,zoom:s.zoom,up:s.up};}),op:await opac(),hp:(await page.evaluate(()=>viewer.state().hp)),
+    vis:await page.evaluate(()=>[...document.querySelectorAll('#tree input[type=checkbox]')].map(c=>c.checked))};
+  await page.locator('#tabs [data-tab=tour]').click();
+  assert.match(await page.locator('#tour-out .paneh').textContent(),/by coding agent/,'an agent id reads "coding agent"');
+  assert.equal(await page.evaluate(()=>/opus-worker/.test(document.getElementById('tour-out').textContent)),false,'the internal id is never printed');
+  await page.locator('#tour-start').click();await page.waitForTimeout(1200);
+  let s=await page.evaluate(()=>{const v=viewer.state();return {focus:v.focus,tour:v.review.tour,target:v.target,cam:v.cam,hp:v.hp,
+    vis:[...document.querySelectorAll('#tree input[type=checkbox]')].map(c=>c.checked)};});
+  assert(s.tour.on&&s.focus,'the stop is in focus');
+  assert.equal(s.focus.faded,(await page.evaluate(()=>viewer.meshes().length))-1,'every other part fades');
+  assert.equal(s.focus.outlines,1,'the stop part is outlined');
+  const info0=s.tour.info;
+  assert(s.tour.info&&s.tour.info.axis&&s.tour.info.axis!=='+X','hidden from +X: the clearest axis view instead ('+JSON.stringify(s.tour.info)+')');
+  assert(Math.hypot(s.target[0],s.target[1],s.target[2]-16)<2,'the camera fits the block: '+JSON.stringify(s.target));
+  assert.equal(s.hp,before.hp,'no undo step');assert.deepEqual(s.vis,before.vis,'no tree checkbox changed');
+  const faded=await page.evaluate(()=>[...document.querySelectorAll('.pin-marker')].filter(e=>e.classList.contains('faded')).map(e=>e.dataset.pin));
+  assert(faded.length>=1,'the pin on the faded side wall fades');
+  // the long note collapses with Show more
+  const note=page.locator('#tour-out div.item.sel .note');
+  const h0=await note.evaluate(e=>e.getBoundingClientRect().height);
+  assert(await page.locator('#tour-out div.item.sel button.more').isVisible(),'Show more under a long note');
+  await page.locator('#tour-out div.item.sel button.more').click();
+  assert((await note.evaluate(e=>e.getBoundingClientRect().height))>h0*2,'Show more opens it');
+  // Next animates to the wall; Show whole model; a stop with no parts
+  await page.locator('#tour-next').click();await page.waitForTimeout(1200);
+  s=await page.evaluate(()=>({focus:viewer.state().focus,target:viewer.state().target}));
+  assert(Math.hypot(s.target[0]-35.15,s.target[1],s.target[2]-16)<2,'Next fits the side wall');
+  await page.locator('#tour-whole').check();await page.waitForTimeout(200);
+  assert.equal(await page.evaluate(()=>viewer.state().focus),null,'Show whole model turns the fade off');
+  await page.locator('#tour-whole').uncheck();await page.waitForTimeout(200);
+  assert(await page.evaluate(()=>viewer.state().focus),'and back on');
+  const camWall=await page.evaluate(()=>viewer.state().cam);
+  await page.locator('#tour-next').click();await page.waitForTimeout(900);
+  assert(await page.locator('.tour-noparts').isVisible(),'a stop with no parts says so');
+  assert.deepEqual(await page.evaluate(()=>viewer.state().cam),camWall,'and leaves the camera');
+  // Esc restores the camera and every opacity exactly
+  await page.mouse.move(5,5);await page.keyboard.press('Escape');await page.waitForTimeout(400);
+  const after={cam:await page.evaluate(()=>{const s=viewer.state();return {cam:s.cam,target:s.target,zoom:s.zoom,up:s.up};}),op:await opac()};
+  assert.deepEqual(after.op,before.op,'opacity restored exactly');
+  assert(after.cam.cam.every((v,i)=>Math.abs(v-before.cam.cam[i])<1e-6)&&after.cam.target.every((v,i)=>Math.abs(v-before.cam.target[i])<1e-6)&&Math.abs(after.cam.zoom-before.cam.zoom)<1e-9,'camera restored exactly');
+  assert.equal(await page.evaluate(()=>viewer.state().review.tour.on),false);
+  // leaving the tab does the same
+  await page.locator('#tour-prev').click();await page.waitForTimeout(800);
+  assert(await page.evaluate(()=>viewer.state().focus),'Prev re-enters the tour');
+  await page.locator('#tabs [data-tab=pins]').click();await page.waitForTimeout(400);
+  assert.deepEqual(await opac(),before.op,'leaving the Tour tab restores opacity');
+  assert.equal(await page.evaluate(()=>viewer.state().focus),null);
+  ok(`tour focus: from +X the block hidden behind the wall gets the ${info0.axis} view (sees ${(info0.seen*100).toFixed(0)} %), others faded, block outlined, faded pin, no undo step or checkbox change; Show more; Next fits the wall; Show whole model; a no-parts stop keeps the camera; Esc and leaving the tab restore camera and opacity exactly; author "coding agent"`);
+}
+
+// (4) stale server guard: a status.json whose start stamp differs from the stamp now shows the persistent banner with
+// the restart command; a page module the server will not serve (404) shows it too, instead of a blank page.
+async function staleServerChecks(C){
+  const {page,ok}=C;
+  const st=await page.evaluate(async()=>(await fetch('status.json')).json());
+  assert(st.page_stamp&&st.page_stamp===st.page_stamp_now,'a fresh server reports equal stamps');
+  assert.equal(await page.locator('#stale-banner').isVisible(),false,'no banner on a fresh server');
+  await page.route('**/status.json*',async r=>{const res=await r.fetch();const j=await res.json();j.page_stamp_now='0000000000000000';await r.fulfill({response:res,json:j});});
+  await page.reload();await page.locator('#stale-banner').waitFor({state:'visible',timeout:20000});
+  const txt=await page.locator('#stale-banner').textContent();
+  assert.match(txt,/This viewer's files changed on disk since its server started\. Restart the viewer to finish updating\./);
+  assert.match(await page.locator('#stale-cmd').textContent(),/^cd .+ && .+ --port [0-9]+ /,'the restart command as the server was started');
+  await page.unroute('**/status.json*');
+  await page.route('**/review.js*',r=>r.fulfill({status:404,contentType:'application/json',body:'{"error":"no /review.js"}'}));
+  await page.reload();await page.locator('#stale-banner').waitFor({state:'visible',timeout:20000});
+  assert.equal(await page.locator('#stale-banner').getAttribute('data-why'),'import','a module that fails to load shows the banner');
+  await page.unroute('**/review.js*');
+  await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});
+  assert.equal(await page.locator('#stale-banner').isVisible(),false,'and it goes once the server serves everything');
+  C.errs.length=0;                                  // the forced 404 above logs a console error by design
+  ok('stale server guard: differing build stamps and a module the server will not serve both show the restart banner with the launch command; a fresh server shows none');
 }

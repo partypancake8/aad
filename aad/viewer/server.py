@@ -1,7 +1,9 @@
 """`aad view`: a local three.js CAD viewer with the review workspace.
 
-Stdlib only (http.server on 127.0.0.1, foreground, Ctrl-C stops it). Page files are index.html, view.js,
-style.css and the favicons next to this module. Routes:
+Stdlib only (http.server on 127.0.0.1, foreground, Ctrl-C stops it). Page files are the .html, .js, .css, .svg and
+.png files next to this module, looked up when requested (a module added on disk is served without a restart).
+status.json also carries page_stamp (taken at start), page_stamp_now and the launch command, so the page can ask for
+a restart when the package changed under a running server. Routes:
   /                    the page
   /models.json         the loaded files and their groups (each directory is one group)
   /models/<n>          bytes of file n (.glb, .stl, .ply); /model.glb is an alias for the first GLB
@@ -46,27 +48,91 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
               ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8",
               ".png": "image/png"}
-PAGE_FILES = {"index.html": PAGE_TYPES[".html"], "view.js": PAGE_TYPES[".js"], "review.js": PAGE_TYPES[".js"],
-              "repin.js": PAGE_TYPES[".js"], "pin_groups.js": PAGE_TYPES[".js"],
-              "measure.js": PAGE_TYPES[".js"], "weight.js": PAGE_TYPES[".js"],
-              "prep.js": PAGE_TYPES[".js"], "prep_worker.js": PAGE_TYPES[".js"],
-              "style.css": PAGE_TYPES[".css"],
-              "favicon.svg": PAGE_TYPES[".svg"], "favicon-dev.svg": PAGE_TYPES[".svg"],
-              "favicon-prod.svg": PAGE_TYPES[".svg"], "favicon-32.png": PAGE_TYPES[".png"],
-              "favicon-180.png": PAGE_TYPES[".png"]}
+
+
+# The page files are whatever ships in this package directory, read at request time: a file directly in HERE with a
+# page extension (PAGE_TYPES), whose real path stays in HERE, plus the vendored libraries under vendor/. So a page
+# module added on disk is served by a viewer that was started before it existed (no restart, no stale whitelist).
+def page_files(here=None):
+    """{file name: content type} of the page files in the package directory right now (not vendor/)."""
+    here = here or HERE
+    out = {}
+    try:
+        names = sorted(os.listdir(here))
+    except OSError:
+        return out
+    for n in names:
+        ext = os.path.splitext(n)[1].lower()
+        if ext in PAGE_TYPES and not n.startswith(".") and os.path.isfile(os.path.join(here, n)):
+            out[n] = PAGE_TYPES[ext]
+    return out
 
 
 def page_file(rel):
     """(absolute path, content type) of a page or vendor file under this package, None for anything else."""
-    if rel in PAGE_FILES:
-        return os.path.join(HERE, rel), PAGE_FILES[rel]
+    root = os.path.realpath(HERE)
+    if "/" not in rel and "\\" not in rel:
+        ext = os.path.splitext(rel)[1].lower()
+        if not rel or rel.startswith(".") or ext not in PAGE_TYPES:
+            return None
+        p = os.path.realpath(os.path.join(root, rel))
+        if os.path.dirname(p) != root or not os.path.isfile(p):
+            return None
+        return p, PAGE_TYPES[ext]
     if not rel.startswith("vendor/"):
         return None
-    p = os.path.realpath(os.path.join(HERE, rel))
+    p = os.path.realpath(os.path.join(root, rel))
     ext = os.path.splitext(p)[1].lower()
-    if not p.startswith(os.path.join(HERE, "vendor") + os.sep) or ext not in PAGE_TYPES or not os.path.isfile(p):
+    if not p.startswith(os.path.join(root, "vendor") + os.sep) or ext not in PAGE_TYPES or not os.path.isfile(p):
         return None
     return p, PAGE_TYPES[ext]
+
+
+# ---- build stamp: the page compares the stamp taken when this server started with one taken now, and asks for a
+# restart when they differ (new or removed page files, or changed Python the running process does not have). It
+# hashes the page file list (names; a page file's edits need no restart) and the content of every .py file of the
+# aad package (cached by size and mtime). ----
+PKG = os.path.dirname(HERE)
+_py_cache = {}
+
+
+def _py_digest(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "gone"
+    key = (st.st_size, st.st_mtime_ns)
+    hit = _py_cache.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    import hashlib
+    with open(path, "rb") as fh:
+        d = hashlib.sha1(fh.read()).hexdigest()
+    _py_cache[path] = (key, d)
+    return d
+
+
+def page_stamp(here=None):
+    import hashlib
+    here = here or HERE
+    pkg = os.path.dirname(here)
+    h = hashlib.sha1()
+    for n in page_files(here):
+        h.update(b"page:" + n.encode() + b"\n")
+    for d, subs, files in os.walk(pkg):
+        subs[:] = sorted(s for s in subs if s not in ("__pycache__", "vendor") and not s.startswith("."))
+        for f in sorted(files):
+            if f.endswith(".py"):
+                p = os.path.join(d, f)
+                h.update(b"py:" + os.path.relpath(p, pkg).encode() + b":" + _py_digest(p).encode() + b"\n")
+    return h.hexdigest()[:16]
+
+
+def launch_command():
+    """How this process was started (its argv and working directory), for the page's restart hint only."""
+    import shlex
+    argv = list(getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv])
+    return f"cd {shlex.quote(os.getcwd())} && {shlex.join(argv)}"
 EXTS = (".glb", ".stl", ".ply")
 CTYPES = {".glb": "model/gltf-binary", ".stl": "model/stl", ".ply": "application/octet-stream", ".png": "image/png",
           ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
@@ -444,6 +510,8 @@ def load_versions(path, name=None, current=None, project=None):
 def make_handler(V, versions=None):
     default_viewer = V
     versions = versions or {}
+    stamp0 = page_stamp()                       # the page files and Python this server process started with
+    launch = launch_command()
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -548,7 +616,9 @@ def make_handler(V, versions=None):
             if path == "/favicon.ico":
                 path = "/favicon-32.png"
             if path == "/status.json":
-                return self._json(200, V.status())
+                st = V.status()
+                st.update(page_stamp=stamp0, page_stamp_now=page_stamp(), restart=launch)
+                return self._json(200, st)
             if path == "/models.json":
                 return self._json(200, V.manifest())
             if path == "/tree.json":

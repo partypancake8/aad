@@ -16,8 +16,37 @@
   console.error=function(){send('error',Array.prototype.join.call(arguments,' '));ce.apply(console,arguments);};
   console.warn=function(){send('warn',Array.prototype.join.call(arguments,' '));cw.apply(console,arguments);};
 })();
+// Stale server guard. The server reports two build stamps in status.json: page_stamp, taken when it started, and
+// page_stamp_now, taken for this request (the page file list and its Python). When they differ, or when a page module
+// fails to load (the entry script's error event: a module the server would not serve), a banner at the top says to
+// restart, with the command the server was started with (status.json "restart"; shown here only). view.js calls
+// __viewerStale.check(status) on every poll too, so a change while the page is open shows the banner as well.
+(function(){
+  var shown=false,cmd=null;
+  function show(why){
+    var b=document.getElementById('stale-banner');if(!b){document.addEventListener('DOMContentLoaded',function(){show(why);});return;}
+    b.hidden=false;b.dataset.why=why;document.body.classList.add('stale');shown=true;
+    if(cmd){document.getElementById('stale-cmd').textContent=cmd;document.getElementById('stale-cmdrow').hidden=false;}
+    fit();
+  }
+  // the page moves down under the banner instead of being covered by it
+  function fit(){var b=document.getElementById('stale-banner');if(b&&!b.hidden)document.body.style.setProperty('--stale-h',b.offsetHeight+'px');}
+  window.addEventListener('resize',fit);
+  function check(st){
+    if(!st)return;if(st.restart)cmd=st.restart;
+    if(st.page_stamp&&st.page_stamp_now&&st.page_stamp!==st.page_stamp_now)show('stamp');
+    else if(shown)show(document.getElementById('stale-banner').dataset.why||'stamp');
+  }
+  function fetchStatus(why){
+    try{fetch(new URL('status.json?ts='+Date.now(),location.href)).then(function(r){return r.json();}).then(function(st){check(st);if(why)show(why);},function(){if(why)show(why);});}catch(e){if(why)show(why);}
+  }
+  window.__viewerStale={check:check,failed:function(){fetchStatus('import');},get shown(){return shown;}};
+  fetchStatus(null);
+})();
 </script>
 </head><body>
+<div id="stale-banner" role="alert" hidden><i class="ic i-alert-triangle"></i><div><b>This viewer's files changed on disk since its server started. Restart the viewer to finish updating.</b>
+  <div id="stale-cmdrow" hidden><code id="stale-cmd"></code><button id="stale-copy" type="button" onclick="(function(){var t=document.getElementById('stale-cmd').textContent;try{navigator.clipboard.writeText(t);}catch(e){}})()"><i class="ic i-clipboard-copy"></i>Copy</button></div></div></div>
 <header id="top">
   <div id="brand"><span id="envbadge" class="environment-pill" hidden></span><span id="title">CAD viewer</span><span id="status">loading</span></div>
   <div class="tools" id="modes" role="toolbar" aria-label="Mode">
@@ -161,6 +190,7 @@
   <div id="component-menu-name"></div>
   <button id="select-component" role="menuitem"><i class="ic i-pointer"></i><span>Select</span></button>
   <button id="pin-component" role="menuitem" hidden><i class="ic i-map-pin"></i><span>Pin</span></button>
+  <button id="clear-component" role="menuitem" hidden title="The click went through a clear part to the part behind it; act on the clear part instead"><i class="ic i-layers-subtract"></i><span>Pick the clear part in front</span></button>
   <div class="msep"></div>
   <button id="isolate-component" role="menuitem"><i class="ic i-focus"></i><span>Isolate component</span></button>
   <button id="hide-component" role="menuitem"><i class="ic i-eye-off"></i><span>Hide</span></button>
@@ -191,6 +221,7 @@
   <div class="oh">Display</div>
   <label><input type="checkbox" id="opt-edges"> Feature edges</label>
   <label id="opt-large-row" title="Over 2.5 million triangles the Revisions hologram draws crease edges only (no curved-surface silhouettes) and builds them in the background"><input type="checkbox" id="opt-large" checked> Large model mode <span class="muted">automatic over 2.5 M triangles</span></label>
+  <label id="opt-through-row" title="A click, hover or right-click on a clear part (glass, acrylic, a see-through cover) goes to the opaque part behind it; hold Alt to pick the clear part itself"><input type="checkbox" id="opt-through" checked> Pick through clear parts <span class="muted">Alt picks the clear part</span></label>
   <label id="opt-dim-row" title="Pins whose point is behind other geometry from this view draw with a dimmed fill and a dashed ring" hidden><input type="checkbox" id="opt-dim-occluded" checked> Dim pins behind geometry</label>
 </div>
 <div id="part-info" role="dialog" aria-modal="false" aria-labelledby="part-info-h" hidden>
@@ -205,5 +236,5 @@
   "camera-controls":"./vendor/camera-controls/camera-controls.module.js",
   "three-viewport-gizmo":"./vendor/three-viewport-gizmo/three-viewport-gizmo.js",
   "three-mesh-bvh":"./vendor/three-mesh-bvh/three-mesh-bvh.module.js"}}</script>
-<script type="module" src="view.js"></script>
+<script type="module" src="view.js" onerror="window.__viewerStale&&window.__viewerStale.failed()"></script>
 </body></html>

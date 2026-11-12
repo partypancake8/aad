@@ -121,6 +121,67 @@ def test_detectors_components_floating_triangle_jump(tmp_path):
     assert ("plate", "floating") not in kinds
 
 
+def _out(v, f):
+    """Wind every triangle of a convex mesh outward (box() winds inward, which no other test minds)."""
+    v, f = np.asarray(v, float), np.array(f)
+    c = v.mean(0)
+    n = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+    inward = np.einsum("ij,ij->i", n, v[f].mean(1) - c) < 0
+    f[inward] = f[inward][:, ::-1]
+    return v, f
+
+
+def _wedge():
+    """A short 11 degree wedge (3 mm long, 0.6 mm at its back, 10 mm wide): every face meets every other at an edge
+    or a corner, so an inward ray from the sloped face only ever reaches a face that touches it."""
+    v = np.array([[0, 0, 0], [3, 0, 0], [3, 0, 0.6], [0, 10, 0], [3, 10, 0], [3, 10, 0.6]], float)
+    f = [(0, 2, 1), (3, 4, 5), (0, 1, 4), (0, 4, 3), (0, 3, 5), (0, 5, 2), (1, 2, 5), (1, 5, 4)]
+    return _out(v, f)
+
+
+def _fan_top(n, reach):
+    """A 10 mm box whose top face is a fan of n needle triangles from one corner over `reach` mm of the far edge (the
+    rest of the face is two ordinary triangles): many slivers, whose area grows with reach."""
+    v, f = box()
+    v = [tuple(x) for x in v]
+    top = [tuple(t) for t in f if all(v[i][2] > 0 for i in t)]
+    f = [tuple(t) for t in f if tuple(t) not in top]
+    p0, a, b = 1, 3, 7                                  # (-5,-5,5) to the edge (-5,5,5) -> (5,5,5)
+    r = np.array(v[a]) + (np.array(v[b]) - np.array(v[a])) * reach / 10.0
+    pts = [np.array(v[a]) + (r - np.array(v[a])) * i / n for i in range(n + 1)]
+    ids = [a] + list(range(len(v), len(v) + n - 1)) + [len(v) + n - 1]
+    v += [tuple(q) for q in pts[1:]]
+    f += [(p0, ids[i], ids[i + 1]) for i in range(n)]
+    f += [(p0, ids[-1], b), (p0, b, 5)] if reach < 10 else [(p0, b, 5)]
+    return _out(v, f)
+
+
+def test_detector_evidence_and_false_positives(tmp_path):
+    """r10: every warning says where it is; a wedge's apex read against its own adjacent face is not a thin wall;
+    sliver triangles are a mesh hint only when their area is a real, grown share of the surface."""
+    write_parts(tmp_path / "a.glb", {"wall": _out(*box((0, 0, 0), (20, 20, 3))), "wedge": _out(*box((20, 0, 0), (3, 10, 3))),
+                                      "fine": _out(*box((40, 0, 0))), "needles": _out(*box((60, 0, 0))),
+                                      "base": _out(*box((30, 0, -8), (100, 30, 2)))})
+    fine, needles = _fan_top(300, 0.1), _fan_top(400, 10)
+    write_parts(tmp_path / "b.glb", {"wall": _out(*box((0, 0, 0), (20, 20, 0.2))), "wedge": (_wedge()[0] + [18.5, -5, -0.3], _wedge()[1]),
+                                      "fine": (fine[0] + [40, 0, 0], fine[1]), "needles": (needles[0] + [60, 0, 0], needles[1]),
+                                      "base": _out(*box((30, 0, -8), (100, 30, 2)))})
+    doc = D.diff([tmp_path / "a.glb"], [tmp_path / "b.glb"])
+    W = {(w["part"], w["kind"]): w for w in doc["warnings"]}
+    thin = W[("wall", "thin_feature")]
+    ev = thin["evidence"]
+    assert thin["value"] == pytest.approx(0.2, abs=1e-3) and thin["baseline"] == pytest.approx(3.0, abs=1e-3)
+    assert np.linalg.norm(np.subtract(ev["origin"], ev["hit"])) == pytest.approx(0.2, abs=1e-3)
+    assert len(ev["origin_tri"]) == 9 and len(ev["hit_tri"]) == 9 and ev["patch_mm2"] >= 0.5
+    assert ("wedge", "thin_feature") not in W, W.get(("wedge", "thin_feature"))
+    assert ("fine", "slivers") not in W                   # 300 slivers on 0.5 mm2: tessellation, no warning
+    sl = W[("needles", "slivers")]
+    assert sl.get("hint") is True and sl["evidence"]["count"] == sl["value"] >= 300
+    assert len(sl["evidence"]["tris"]) == 9 * min(sl["value"], 1500) and sl["evidence"]["area_frac"] > 0.05
+    assert "mesh hint" in D.format_text(doc)
+    validate(doc, "diff")
+
+
 def test_glb_roundtrip_and_hierarchy(tmp_path):
     v, f = box((1, 2, 3))
     write_parts(tmp_path / "x.glb", {"a": (v, f), "a2": (v + 5, f)})

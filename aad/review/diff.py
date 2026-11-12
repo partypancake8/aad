@@ -166,7 +166,8 @@ def summary(doc, limit=40):
                 against_kind=doc["a"].get("kind"), created=doc["created"],
                 summary=doc["summary"], collateral=doc["collateral"], parts=changed[:limit],
                 more=max(0, len(changed) - limit),
-                warnings=[dict(kind=w["kind"], part=w["part"], message=w["message"]) for w in doc["warnings"][:limit]])
+                warnings=[dict(kind=w["kind"], part=w["part"], message=w["message"], **({"hint": True} if w.get("hint") else {}))
+                          for w in doc["warnings"][:limit]])
 
 
 def format_text(doc):
@@ -186,7 +187,7 @@ def format_text(doc):
             extra = f"  centroid shift {d['distance']:.3f} mm, volume {d['volume']:+.2f} mm3, tris {d['tris']:+d}"
         lines.append(f"  {tag}{r['status']:8s} {r['name']}{extra}")
         for w in r["warnings"]:
-            lines.append(f"      warning {w['kind']}: {w['message']}")
+            lines.append(f"      warning {w['kind']}{' (mesh hint)' if w.get('hint') else ''}: {w['message']}")
     return "\n".join(lines)
 
 

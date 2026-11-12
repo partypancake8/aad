@@ -6,7 +6,8 @@ All triangle primitives of a node are merged. Supported: float32 POSITION, u8/u1
 matrix or TRS. Not supported (raises GLBError): sparse accessors, quantized or Draco-compressed positions.
 
 write_parts(path, parts) writes a GLB with one node and one mesh per part (identity transforms, optional
-per-part RGB colour), which is what the demo fixture and the tests use.
+per-part RGB colour, or RGBA where an alpha below 1 writes a blended, clear material), which is what the demo
+fixture and the tests use.
 """
 import json
 import struct
@@ -182,8 +183,12 @@ def write_parts(path, parts):
         ia = len(js["accessors"]) - 1
         prim = dict(attributes=dict(POSITION=pa), indices=ia, mode=4)
         if rgb is not None:
-            js["materials"].append(dict(pbrMetallicRoughness=dict(baseColorFactor=[*rgb, 1.0], metallicFactor=0.1,
-                                                                  roughnessFactor=0.6), name=name))
+            rgba = [*rgb, 1.0] if len(rgb) == 3 else list(rgb)
+            mat = dict(pbrMetallicRoughness=dict(baseColorFactor=rgba, metallicFactor=0.1, roughnessFactor=0.6),
+                       name=name)
+            if rgba[3] < 1:                         # a clear part (alpha below 1): blended, both sides drawn
+                mat.update(alphaMode="BLEND", doubleSided=True)
+            js["materials"].append(mat)
             prim["material"] = len(js["materials"]) - 1
         js["meshes"].append(dict(name=name, primitives=[prim]))
         js["nodes"].append(dict(name=name, mesh=len(js["meshes"]) - 1))
