@@ -232,6 +232,7 @@ def test_packet_written_and_valid(tmp_path):
     assert os.path.exists(os.path.join(d, "packet.json")) and open(os.path.join(d, "view.png"), "rb").read(4) == b"\x89PNG"
     validate(json.load(open(os.path.join(d, "packet.json"))), "packet")
     assert "aad review --project" in doc["prompt"] and "1 part(s) in the scope lock" in doc["prompt"]
+    assert doc["prompt"].endswith("If your agent has the /aad skill, load it first.")
 
 
 # ---- CLI ----

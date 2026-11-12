@@ -20,7 +20,8 @@ def prompt_text(store, packet_dir, n_open, scope_n, model_name, not_fixed=(), re
     return (f"CAD review for {model_name}: {n_open} open pin(s). {esc}Run `aad review --project {proj} --json` for the "
             f"pins (part, local point, normal, issue class, reason: the note, or the class meaning when the note is empty), the scope lock, the latest diff and the camera, "
             f"and look at {os.path.join(packet_dir, 'view.png')} (pins are numbered). {scope} After the rebuild, "
-            f"run `aad review diff` or reload the viewer and check the diff for collateral before replying.")
+            f"run `aad review diff` or reload the viewer and check the diff for collateral before replying. "
+            "If your agent has the /aad skill, load it first.")
 
 
 def write(store: Store, payload, png_bytes=None):
