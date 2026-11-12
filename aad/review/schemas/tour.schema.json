@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadreview/tour",
+  "title": ".cadreview/tour.json: an agent's ordered change tour for one build",
+  "type": "object",
+  "required": ["schema", "stops"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "cadreview/1"},
+    "build": {"type": ["string", "null"], "description": "build id from `aad review --json` (model.build); null means the current build"},
+    "title": {"type": "string"},
+    "author": {"type": "string"},
+    "created": {"$ref": "common.schema.json#/$defs/time"},
+    "stops": {"type": "array", "items": {"type": "object", "required": ["id", "parts", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "parts": {"type": "array", "items": {"type": "string"}, "description": "GLB node names or viewer tree keys"},
+        "note": {"type": "string"},
+        "kind": {"enum": ["changed", "added", "removed", "unsure", "detector", "info"]},
+        "issue_class": {"$ref": "common.schema.json#/$defs/issue_class"},
+        "camera": {"anyOf": [{"type": "null"}, {"type": "object", "required": ["eye", "target"],
+          "properties": {"eye": {"$ref": "common.schema.json#/$defs/vec3"}, "target": {"$ref": "common.schema.json#/$defs/vec3"}}}]},
+        "ghost": {"type": "boolean", "description": "show the baseline shape of these parts translucently"}
+      }}},
+    "decisions": {"type": "object", "additionalProperties": {"type": "object", "required": ["decision"],
+      "properties": {"decision": {"enum": ["accept", "reject"]}, "at": {"type": "string"}, "pin": {"type": ["string", "null"]}}}}
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadreview/packet",
+  "title": ".cadreview/packets/<timestamp>/packet.json: one review hand-off from the viewer to a coding agent",
+  "type": "object",
+  "required": ["schema", "id", "created", "model", "camera", "pins", "scope", "screenshot", "prompt"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "cadreview/1"},
+    "id": {"type": "string", "pattern": "^[0-9]{8}-[0-9]{6}(-[0-9]+)?$"},
+    "created": {"type": "string"},
+    "project": {"type": "string"},
+    "model": {"type": "object", "required": ["name", "files"],
+      "properties": {"name": {"type": "string"}, "title": {"type": "string"}, "version": {"type": ["string", "null"]},
+                     "build": {"type": ["string", "null"]}, "files": {"type": "array", "items": {"type": "string"}}}},
+    "camera": {"$ref": "common.schema.json#/$defs/camera"},
+    "selection": {"anyOf": [{"type": "null"}, {"$ref": "common.schema.json#/$defs/part_ref"}]},
+    "pins": {"type": "array", "items": {"$ref": "pin.schema.json"}},
+    "scope": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/part_ref"}},
+    "measurements": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/measure"}},
+    "hidden": {"type": "array", "items": {"type": "string"}},
+    "diff": {"type": ["object", "null"], "description": "summary of the latest diff: against, summary, collateral, changed parts, warnings"},
+    "tour": {"type": ["object", "null"]},
+    "screenshot": {"type": "string"},
+    "screenshot_markers": {"type": "array", "items": {"type": "object", "required": ["n", "x", "y"],
+      "properties": {"n": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}, "pin": {"type": "string"}}}},
+    "prompt": {"type": "string"}
+  }
+}

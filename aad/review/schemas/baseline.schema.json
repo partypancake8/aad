@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadreview/baseline",
+  "title": ".cadreview/baselines/<id>/baseline.json: a kept copy of one earlier build",
+  "type": "object",
+  "required": ["schema", "id", "created", "files"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "cadreview/1"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "created": {"type": "string"},
+    "label": {"type": "string"},
+    "build": {"type": ["string", "null"]},
+    "reviewed": {"type": "object", "required": ["packet"], "additionalProperties": false,
+      "description": "a packet was sent against this build: the build the reviewer looked at, kept while the packet is one of the newest 3",
+      "properties": {"packet": {"type": "string"}, "at": {"type": "string"}}},
+    "files": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["name", "size"],
+      "properties": {"name": {"type": "string"}, "size": {"type": "integer"}, "mtime": {"type": ["number", "null"]},
+                     "source": {"type": "string"}}}}
+  }
+}

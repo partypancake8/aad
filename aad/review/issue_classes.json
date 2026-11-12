@@ -1,0 +1,19 @@
+{
+  "schema": "cadreview/1",
+  "classes": [
+    {"id": "weird_geometry", "label": "Weird geometry", "hint": "does not blend with the part, looks wrong, not cohesive design", "meaning": "This geometry does not blend with the part or make cohesive design sense; simplify or rebuild it so it reads as one intentional shape."},
+    {"id": "incoherent_addition", "label": "Incoherent addition", "hint": "added geometry satisfies the words but does not fit the part", "meaning": "This added feature satisfies the request on paper but does not fit the part; redesign it so it belongs to the part's form and purpose."},
+    {"id": "collateral_damage", "label": "Collateral damage", "hint": "an edit fixed one thing and broke neighbouring geometry", "meaning": "An edit changed or broke geometry here that was not part of the request; restore it to how it was before that edit."},
+    {"id": "floating_unsupported", "label": "Floating or unsupported", "hint": "touches nothing, hangs in the air, no load path", "meaning": "This touches nothing or has no load path; connect it to the structure it should sit on or remove it."},
+    {"id": "orientation_mirror", "label": "Orientation or mirror", "hint": "wrong side, flipped, mirrored, rotated", "meaning": "This is on the wrong side, flipped, mirrored or rotated; put it in the orientation the design intends."},
+    {"id": "fit_clearance", "label": "Fit or clearance", "hint": "interference, too tight, too loose, wrong gap", "meaning": "The fit here is wrong (interference, too tight or too loose); fix the clearance so the mating parts fit as intended."},
+    {"id": "printability", "label": "Printability", "hint": "overhangs, thin walls, unprintable features, print orientation", "meaning": "This will not print well (overhang, thin wall or unsupported feature); change the geometry or print orientation so it prints flat without supports."},
+    {"id": "holes_ports_blocked", "label": "Holes or ports blocked", "hint": "access, cable or screw path blocked", "meaning": "Access here is blocked (a cable, screw or tool path); clear the path so the hole or port can be used."},
+    {"id": "fasteners_assembly", "label": "Fasteners or assembly", "hint": "screw length, nut access, assembly order", "meaning": "The fastening or assembly here does not work (screw length, nut access or assembly order); make it possible to assemble with the chosen hardware."},
+    {"id": "regression", "label": "Regression", "hint": "something that was fixed before is broken again", "meaning": "Something that was fixed before is broken again here; restore the earlier fix without undoing later changes."},
+    {"id": "belt_pulley", "label": "Belt or pulley", "hint": "belt path, tension, pulley alignment", "meaning": "The belt or pulley here is wrong (path, tension or alignment); align the belt path and give it a working tension method."},
+    {"id": "envelope_size", "label": "Envelope or size", "hint": "outside the allowed envelope, too big or small", "meaning": "This is outside the allowed envelope or the wrong size; bring it back within the size limits."},
+    {"id": "intent_misread", "label": "Intent misread", "hint": "the agent did something other than what was meant", "meaning": "This is not what was asked for; reread the request and change this to match what was meant."},
+    {"id": "other", "label": "Other", "hint": "anything else", "meaning": "Something is wrong here; inspect this spot and fix what does not look intentional."}
+  ]
+}

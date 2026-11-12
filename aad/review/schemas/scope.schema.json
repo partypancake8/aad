@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadreview/scope",
+  "title": ".cadreview/scope.json: the parts that may change in the next edit; every other part is locked",
+  "type": "object",
+  "required": ["schema", "parts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "cadreview/1"},
+    "updated": {"$ref": "common.schema.json#/$defs/time"},
+    "note": {"type": "string"},
+    "parts": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/part_ref"}}
+  }
+}

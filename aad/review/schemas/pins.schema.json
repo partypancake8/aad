@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadreview/pins",
+  "title": ".cadreview/pins.json: every pin of the project, open and resolved",
+  "type": "object",
+  "required": ["schema", "next", "pins"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "cadreview/1"},
+    "next": {"type": "integer", "minimum": 1},
+    "updated": {"$ref": "common.schema.json#/$defs/time"},
+    "pins": {"type": "array", "items": {"$ref": "pin.schema.json"}}
+  }
+}

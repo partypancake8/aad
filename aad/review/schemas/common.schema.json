@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cadreview/common",
+  "$defs": {
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "bbox": {"type": "object", "required": ["min", "max"],
+             "properties": {"min": {"$ref": "#/$defs/vec3"}, "max": {"$ref": "#/$defs/vec3"}}},
+    "time": {"type": ["string", "null"]},
+    "part_ref": {"type": "object", "required": ["key", "node"], "additionalProperties": false,
+      "properties": {
+        "key": {"type": "string", "minLength": 1, "description": "viewer tree key: the tree path joined with ' > '"},
+        "node": {"type": "string", "description": "GLB node name (or file name for STL), the diff's part name"},
+        "component": {"type": ["string", "null"]},
+        "file": {"type": ["integer", "null"]},
+        "path": {"type": "array", "items": {"type": "string"}}
+      }},
+    "camera": {"type": ["object", "null"], "required": ["position", "target"],
+      "properties": {
+        "projection": {"enum": ["ortho", "persp"]},
+        "position": {"$ref": "#/$defs/vec3"}, "target": {"$ref": "#/$defs/vec3"},
+        "up": {"$ref": "#/$defs/vec3"}, "zoom": {"type": "number"}, "view": {"type": ["string", "null"]},
+        "fov": {"type": ["number", "null"]}
+      }},
+    "measure": {"type": "object", "required": ["a", "b", "distance", "delta"], "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string"},
+        "a": {"$ref": "#/$defs/vec3"}, "b": {"$ref": "#/$defs/vec3"},
+        "a_part": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/part_ref"}]},
+        "b_part": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/part_ref"}]},
+        "distance": {"type": "number", "minimum": 0}, "delta": {"$ref": "#/$defs/vec3"},
+        "pin": {"type": ["string", "null"]}
+      }},
+    "issue_class": {"enum": ["weird_geometry", "incoherent_addition", "collateral_damage", "floating_unsupported",
+      "orientation_mirror", "fit_clearance", "printability", "holes_ports_blocked", "fasteners_assembly",
+      "regression", "belt_pulley", "envelope_size", "intent_misread", "other"]}
+  }
+}
