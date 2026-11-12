@@ -748,6 +748,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await checkWeight(page,ok);
  await checkMeasureEntities(page,ok);
  await checkMeasureClear(page,ok);
+ await checkPolish(X);
  assert.deepEqual(errors,[],'no page errors');
  console.log(JSON.stringify({passed:true,url:URL0,baseline:bl,parts:[A.node,B.node],checks,packet:pk.packet,screenshot:pk.screenshot,pins:path.join(rd,'pins.json'),shots:SHOTS||null},null,1));
  await page.close();
@@ -1218,4 +1219,26 @@ async function checkMeasureClear(page,ok){
  assert.equal((await snapMeas(page)).length,0,'after a reload no unattached measurement survives');
  assert(await page.evaluate(id=>viewer.review.snapshot().p.find(p=>p.id===id)?.measure?.kind==='edge_edge',att.pin),'the attached one is still in its pin');
  ok('measurements: Esc cancels then leaves, row delete and Delete key (one undo step each, graphics gone), hidden outside Measure unless kept, attached shows with its pin, Clear all in one undo step, labels never overlap, nothing unattached survives a reload');
+}
+
+// ======== polish round (r5): long headings, hologram edges, card vs view cube, stored builds to keep ========
+async function checkPolish(X){
+ const {page,ok}=X;
+ // 4: a long tour title, long stop notes and long part names wrap inside the panel at the default and a 300 px panel
+ const build=(await X.rstate()).build,LONG='R23:base_skeleton_restored_after_pin_6_with_the_LED_faceplate_and_camera_plate_as_one_rectangle_for_pins_3_and_7';
+ fs.writeFileSync(path.join(X.rd,'tour.json'),JSON.stringify({schema:'cadreview/1',build,title:LONG+' and a few more ordinary words after it',author:'test',
+   stops:[{id:'s1',parts:[X.A.node],note:'Pins 3 and 7: '+LONG+' with the same corners all round; screw positions unchanged.',kind:'changed',ghost:false},
+     {id:'s2',parts:[X.B.node],note:'Thickened the plate',kind:'changed',ghost:false}]}));
+ await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});await page.waitForTimeout(800);
+ await page.locator('#tabs [data-tab=tour]').click();await page.locator('#tour-start').click();await page.waitForTimeout(600);
+ const tourFit=()=>page.evaluate(()=>{const bad=[],pr=document.getElementById('panel').getBoundingClientRect(),pane=document.getElementById('tab-tour');
+   for(const e of pane.querySelectorAll('*')){const r=e.getBoundingClientRect();if(r.width&&r.height&&(r.right>pr.right+0.5||r.left<pr.left-0.5))bad.push((e.id||e.className||e.tagName)+': '+e.textContent.slice(0,30));}
+   if(pane.scrollWidth>pane.clientWidth+1)bad.push('horizontal overflow in the Tour tab');
+   const h=pane.querySelector('.paneh');if(h.getBoundingClientRect().height<40)bad.push('the long title did not wrap');return bad;});
+ assert.deepEqual(await tourFit(),[],'long tour title and stop text wrap at the default panel width');
+ await page.evaluate(()=>document.body.style.setProperty('--panel-w','300px'));await page.waitForTimeout(300);
+ assert.deepEqual(await tourFit(),[],'long tour title and stop text wrap at a 300 px panel');
+ if(X.shots)await page.locator('#panel').screenshot({path:path.join(X.shots,'tour-long-title-300px.png')});
+ await page.evaluate(()=>document.body.style.removeProperty('--panel-w'));await page.waitForTimeout(200);
+ ok('long tour title and stop notes wrap inside the panel at the default width and at 300 px');
 }
