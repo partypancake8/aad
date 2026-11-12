@@ -760,6 +760,8 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await checkMeasureClear(page,ok);
  await checkPolish(X);
  assert.deepEqual(errors,[],'no page errors');
+ const srvLog=await page.evaluate(async()=>(await (await fetch(new URL('log.json',location.href))).json()).entries.filter(e=>e.level==='error').map(e=>e.msg));
+ assert.deepEqual(srvLog.filter(m=>/ResizeObserver/.test(m)),[],'no ResizeObserver loop errors from the tab row');
  console.log(JSON.stringify({passed:true,url:URL0,baseline:bl,parts:[A.node,B.node],checks,packet:pk.packet,screenshot:pk.screenshot,pins:path.join(rd,'pins.json'),shots:SHOTS||null},null,1));
  await page.close();
  }finally{if(context)await context.close();await browser.close();}

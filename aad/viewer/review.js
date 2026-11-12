@@ -877,8 +877,10 @@ export function initReview(V){
   function tabScrollEdges(){const s=tabsEl.dataset.fit==='3';
     tabsEl.classList.toggle('more-right',s&&tabsEl.scrollLeft+tabsEl.clientWidth<tabsEl.scrollWidth-1);tabsEl.classList.toggle('more-left',s&&tabsEl.scrollLeft>1);}
   tabsEl.addEventListener('scroll',tabScrollEdges,{passive:true});
-  if(window.ResizeObserver)new ResizeObserver(()=>fitTabs()).observe(tabsEl);
-  new MutationObserver(()=>fitTabs()).observe(tabsEl,{subtree:true,childList:true,characterData:true});
+  // refit on the next frame, not inside the observer callback (a layout change there is a ResizeObserver loop)
+  let fitRaf=0;const fitSoon=()=>{if(!fitRaf)fitRaf=requestAnimationFrame(()=>{fitRaf=0;fitTabs();});};
+  if(window.ResizeObserver)new ResizeObserver(fitSoon).observe(tabsEl);
+  new MutationObserver(fitSoon).observe(tabsEl,{subtree:true,childList:true,characterData:true});
   fitTabs();
 
   // ---- send packet ----
