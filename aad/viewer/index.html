@@ -73,7 +73,7 @@
   <section class="ctl" id="weightbox" aria-label="Weight estimate">
     <div class="h"><i class="ic i-weight"></i>Weight <span class="muted">estimate</span></div>
     <select id="weight-material" aria-label="Material"></select>
-    <label class="wprint" id="weight-print-row"><input type="checkbox" id="weight-printed"> Printed: infill <input type="number" id="weight-infill" min="0" max="100" step="5" value="20" aria-label="Infill percent"> %, walls <input type="number" id="weight-walls" min="0" max="10" step="0.1" value="1.2" aria-label="Wall thickness mm"> mm</label>
+    <div class="wprint" id="weight-print-row"><label class="wg"><input type="checkbox" id="weight-printed"> Printed</label><label class="wg">infill <input type="number" id="weight-infill" min="0" max="100" step="5" value="20" aria-label="Infill percent"> %</label><label class="wg">walls <input type="number" id="weight-walls" min="0" max="10" step="0.1" value="1.2" aria-label="Wall thickness mm"> mm</label></div>
     <div id="weight-out" aria-live="polite"></div>
   </section>
 </aside>

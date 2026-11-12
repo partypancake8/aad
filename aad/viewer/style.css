@@ -310,9 +310,13 @@ select,textarea{background:var(--bg);color:var(--fg);border:1px solid var(--line
 #weightbox .h{display:flex;align-items:center;gap:6px}
 #weightbox .h .ic{width:16px;height:16px}
 #weight-material{width:100%;margin:2px 0 4px}
-#weightbox .wprint{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:13px;margin:4px 0;white-space:nowrap}
+/* Printed, infill and walls each stay whole (a group wraps as a unit, never a lone unit); the number boxes fit
+   "100" and "12.5" with the spin arrows hidden (arrow keys still step) */
+#weightbox .wprint{display:flex;align-items:center;gap:4px 10px;flex-wrap:wrap;font-size:13px;margin:4px 0}
+#weightbox .wprint .wg{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 #weightbox .wprint.off{opacity:.5}
-#weightbox input[type=number]{width:44px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:2px 4px;font:13px ui-monospace,Menlo,monospace}
+#weightbox input[type=number]{width:calc(4ch + 14px);box-sizing:border-box;text-align:right;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:2px 5px;font:13px ui-monospace,Menlo,monospace;-moz-appearance:textfield;appearance:textfield}
+#weightbox input[type=number]::-webkit-inner-spin-button,#weightbox input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 #weight-out{margin-top:4px;font-size:14px;line-height:1.4;font-variant-numeric:tabular-nums}
 #weight-out .wname{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #weight-out .wbad{color:#ffa198}

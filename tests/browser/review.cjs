@@ -1013,6 +1013,19 @@ async function checkWeight(page,ok){
  await page.evaluate(k=>{viewer.select(k);viewer.commit();},bk);
  await page.locator('#weight-material').selectOption('pla');
  if(!(await page.locator('#weight-printed').isChecked()))await page.locator('#weight-printed').check();
+ // polish 1: "12.5" mm walls and "100" % infill show whole in their boxes at 1280 and 1600 px; each group stays on one line
+ for(const VW of [1600,1280]){
+  await page.setViewportSize({width:VW,height:800});await page.waitForTimeout(300);
+  await page.locator('#weight-walls').fill('12.5');await page.locator('#weight-infill').fill('100');await page.waitForTimeout(200);
+  const nb=await page.evaluate(()=>{const out=[],cv=document.createElement('canvas').getContext('2d');
+    for(const id of ['weight-walls','weight-infill']){const e=document.getElementById(id),cs=getComputedStyle(e);cv.font=`${cs.fontSize} ${cs.fontFamily}`;
+      const room=e.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight),need=cv.measureText(e.value).width;
+      if(need>room+0.5||e.scrollWidth>e.clientWidth)out.push(`${id} "${e.value}" needs ${need.toFixed(1)} px, has ${room.toFixed(1)}`);}
+    for(const g of document.querySelectorAll('#weight-print-row .wg')){const r=g.getBoundingClientRect();if(r.height>28)out.push('group wraps: '+g.textContent.trim());
+      const s=document.getElementById('side').getBoundingClientRect();if(r.right>s.right+0.5)out.push('outside the side panel: '+g.textContent.trim());}
+    return out;});
+  assert.deepEqual(nb,[],`weight inputs show 12.5 and 100 whole at ${VW} px`);
+ }
  await page.locator('#weight-infill').fill('20');await page.locator('#weight-walls').fill('1.2');await page.waitForTimeout(600);
  let w=await W();
  const rel=(x,y)=>Math.abs(x-y)/Math.max(1e-9,Math.abs(y));
@@ -1063,7 +1076,7 @@ async function checkWeight(page,ok){
  assert.equal(await page.evaluate(()=>{try{return JSON.parse(localStorage.getItem('aad-viewer-weight')).mat;}catch(e){return null;}}),'petg','the last material is remembered');
  await page.locator('#weight-material').selectOption('pla');
  await page.setViewportSize({width:1600,height:1050});await page.waitForTimeout(400);
- ok(`weight: bracket ${(geo.vol/1000).toFixed(2)} cm3, all visible parts ${(+w.volume/1000).toFixed(2)} cm3; PLA solid and printed, steel and the total match the mesh within 1 %; Part info card with Copy; Weight block visible at 1280 x 800`);
+ ok(`weight: bracket ${(geo.vol/1000).toFixed(2)} cm3, all visible parts ${(+w.volume/1000).toFixed(2)} cm3; PLA solid and printed, steel and the total match the mesh within 1 %; Part info card with Copy; Weight block visible at 1280 x 800; walls 12.5 and infill 100 show whole at 1280 and 1600 px`);
 }
 
 async function checkMeasureEntities(page,ok){
