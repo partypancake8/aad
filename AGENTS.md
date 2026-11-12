@@ -33,6 +33,9 @@ The reviewer marks problems in the aad viewer. Their review state is in `.cadrev
 9. Never resolve, delete or edit the reviewer's pins, and never edit their scope lock. Resolving is their call
    (`aad review resolve` exists for when they ask you to).
 10. Never loosen a check, tolerance or test to make a build pass. If a check fails, fix the model or report it.
+
+With the aad hook installed, a note starting "aad review for <model>" arrives in your context when the
+pins change: treat it as rule 1's trigger and read `aad review --json`. The `aad mcp` tools return the same data.
 ```
 
 ## Why each rule is there

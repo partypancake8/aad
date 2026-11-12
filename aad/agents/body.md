@@ -60,6 +60,11 @@ If `aad` is not on PATH, try `python -m aad` in the environment where it is inst
   out. Example: `aad demo --no-open`
 - `aad agent install [--claude] [--codex] [--user | --project DIR | --dir DIR] [--force]`: install this skill
   for Claude Code and Codex. Example: `aad agent install --claude --codex`
+- With the aad hook installed, a note that starts "aad review for <model>" appears in your context on its own
+  when the pins, a packet, the scope lock or the tour decisions change. Treat it like a packet prompt.
+- `aad mcp` serves the same review as MCP tools (`review`, `pin`, `diff`, `tour_template`, `write_tour`,
+  `packet_image`) when the user has registered it; `aad follow <project dir>` links a working directory to a
+  project.
 
 `--project DIR` defaults to the nearest folder above the working directory that holds `.cadreview/`.
 

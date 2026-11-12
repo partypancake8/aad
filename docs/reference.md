@@ -65,6 +65,43 @@ planted bad build with the good build as a version to compare against.
 - `aad agent print` writes the Claude Code version (or `--codex`) to stdout. Both share one body,
   `aad/agents/body.md`, under a frontmatter per tool.
 
+### aad hook, aad follow
+
+    aad hook claude | codex            (reads the hook JSON on stdin; run by the agent, not by you)
+    aad follow <project dir> [--cwd DIR] | aad follow --list | aad unfollow [--cwd DIR]
+    aad agent install --hooks [--claude] [--codex] [--user | --project DIR | --settings FILE]
+    aad agent uninstall --hooks [--claude] [--codex] [--user | --project DIR | --settings FILE]
+
+- `aad hook` reads a `UserPromptSubmit` or `SessionStart` payload (`session_id`, `cwd`, `hook_event_name`,
+  `prompt`, `source`), finds the review project (the nearest folder at or above `cwd` with `.cadreview/` or a
+  follow mapping) and prints a short note only when a packet, the open pins, the scope lock or the tour
+  decisions changed since that session last saw them. At most 8 work pins are listed, then "and N more"; keep
+  and question pins get one line each. `SessionStart` with `source` `clear` or `compact` starts over. Exit code
+  is always 0; errors go to `hook.log`.
+- Both tools add a command hook's plain stdout to the model's context for these two events: Claude Code
+  ([hooks reference](https://code.claude.com/docs/en/hooks), "Exit code 0") and Codex (its hooks page,
+  `UserPromptSubmit`; Codex runs a new hook only after you trust it in `/hooks`).
+- State lives outside every project: `$AAD_STATE_DIR`, else `$XDG_STATE_HOME/aad`, else `~/.local/state/aad`.
+  `seen/` holds one file per session (pruned after 14 days), `follow.json` the follow mappings.
+- The installer targets `~/.claude/settings.json` (or `CLAUDE_CONFIG_DIR`) and `~/.codex/hooks.json` (or
+  `CODEX_HOME`); `--project DIR` targets `DIR/.claude/settings.local.json` and `DIR/.codex/hooks.json`. With
+  neither `--claude` nor `--codex` at user level it picks the tools whose config folder exists. Uninstall
+  removes only handlers whose command ends in `aad hook <tool>`.
+
+### aad mcp
+
+    aad mcp [--project DIR]
+    aad agent install --mcp            (prints the registration commands; registers nothing)
+
+- Newline-delimited JSON-RPC 2.0 on stdin and stdout, MCP revision 2025-11-25 (2025-06-18, 2025-03-26 and
+  2024-11-05 are accepted at `initialize`). Methods: `initialize`, `notifications/initialized`, `ping`,
+  `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`.
+- Tools: `review` (`project`, `format`: brief or full), `pin` (`pin`: number or id), `diff` (`against`: a
+  revision or build id), `tour_template`, `write_tour` (`tour`; a tour with `decisions` is refused) and
+  `packet_image` (`packet`). Tool failures come back as results with `isError`.
+- Resources: `aad://review` (the `aad review --json` object), `aad://packet/latest` (packet.json) and
+  `aad://packet/latest/view.png`.
+
 ## Optional viewer inputs
 
 All of these are optional. Without them the viewer builds a tree from the files and the GLB node names, and

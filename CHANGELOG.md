@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The agent sees pins automatically: `aad hook claude` (and `codex`) runs as a `UserPromptSubmit` and
+  `SessionStart` hook and adds a short review note to the agent's context only when a packet, the open pins,
+  the scope lock or the tour decisions changed since that session last looked. Never fails a prompt, about
+  30 ms, no numpy. `aad agent install --hooks` adds the entries additively with a backup and
+  `aad agent uninstall --hooks` removes only its own. `aad follow <project dir>` lets a session started
+  elsewhere follow a project. The Send packet prompt mentions the hook.
+- `aad mcp`: a stdio MCP server (revision 2025-11-25, standard library only) with the `review`, `pin`, `diff`,
+  `tour_template`, `write_tour` and `packet_image` tools and the review and latest-packet resources.
+  `aad agent install --mcp` prints the registration commands.
 - Edge pins on a rebuilt model: the stored edge is matched against the part's current feature edges (within
   0.3 mm, lengths within 5 percent). A match draws the current edge; when the edge is gone the card says "The
   pinned edge changed since this pin was made", the selected pin draws the old edge thin and dashed as "edge as

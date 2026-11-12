@@ -131,6 +131,62 @@ aad agent install --project .      # this project only (.claude/skills/aad/, .ag
 The installed file ends with an empty "Local notes" section for machine-specific notes (your launchers, your
 ports). Reinstalling keeps it, and never replaces a different file without `--force`.
 
+## The agent sees pins automatically
+
+With the hook installed you do not have to paste the packet. Before each prompt Claude Code or Codex runs
+`aad hook`, which finds the review project (the nearest folder above the session's working directory that holds
+`.cadreview/`) and, only when something changed since that session last looked (a new packet, the open pins,
+the scope lock or the tour decisions), adds a few lines to the agent's context:
+
+```
+aad review for bracket_demo (/path/to/project): packet sent 21:29, 3 open pin(s) (1 not fixed), scope lock: bracket.
+New since you last looked: packet sent 21:29; pin #3 added.
+Open pins: #2 [NOT FIXED] point on bracket: hole 5 mm off; #1 point on bracket: thin wall; #3 point on bracket: ...
+Run `aad review --project /path/to/project --json` for anchors, scope and diff, and look at the packet image ...
+```
+
+When nothing changed it prints nothing. It never blocks a prompt: on any error it prints nothing and logs to
+`~/.local/state/aad/hook.log` (or `$XDG_STATE_HOME/aad/`). It takes about 30 ms and loads no numpy.
+
+```
+aad agent install --hooks --claude           # adds two entries to ~/.claude/settings.json, with a backup
+aad agent install --hooks --codex            # the same in ~/.codex/hooks.json; then trust it in Codex with /hooks
+aad agent uninstall --hooks --claude         # removes only the aad entries
+```
+
+The installer adds a `UserPromptSubmit` and a `SessionStart` command hook running `aad hook claude` (or
+`codex`) after any you already have, never changes or reorders other entries, writes a timestamped backup
+first, refuses a file it does not understand, and prints what it added. `--project DIR` writes
+`DIR/.claude/settings.local.json` or `DIR/.codex/hooks.json` instead; `--settings FILE` edits one named file.
+
+A session started outside the CAD project can follow it:
+
+```
+aad follow ~/cad/bracket      # sessions started in this folder (or below it) see ~/cad/bracket's pins
+aad follow --list
+aad unfollow
+```
+
+The Send packet prompt still works without the hook.
+
+## MCP server
+
+`aad mcp` is a stdio MCP server (protocol revision 2025-11-25, standard library only) for agents that prefer
+tool calls. Tools: `review` (open pins, scope lock, baseline, diff summary; `format` brief or full), `pin` (one
+pin in full), `diff` (against the reviewed baseline or a named revision), `tour_template`, `write_tour`
+(validated against the tour schema, then written to `.cadreview/tour.json`) and `packet_image` (the latest
+packet's screenshot). Resources: `aad://review`, `aad://packet/latest`, `aad://packet/latest/view.png`. No tool
+resolves, edits or deletes pins or the scope lock. An agent sees MCP data only when it calls a tool, so the hook
+above is what makes new pins show up on their own.
+
+```
+aad agent install --mcp       # prints the registration commands below with this install's path; changes nothing
+claude mcp add --transport stdio --scope user aad -- aad mcp
+codex mcp add aad -- aad mcp
+```
+
+Add `--project DIR` after `mcp` to pin one project; otherwise the server uses its working directory.
+
 ## Review files
 
 Review state lives in the CAD project, in `.cadreview/`, as plain JSON that both sides read and write:
@@ -227,7 +283,6 @@ They run locally only; CI runs the Python tests and `aad view --check`.
 
 - Kernel face and edge identity, so a pin survives a rebuild that changes the mesh but not the face.
 - Part history with a scrub bar and bisect, to find the build where a regression came in.
-- An MCP server, so an agent can read pins and post a tour without a shell.
 - A benchmark of agent CAD edits: requests, the reviewed model, and how much collateral each edit caused.
 
 ## License

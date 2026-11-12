@@ -185,7 +185,8 @@ def install(*args):
 
 def test_install_hooks_scratch_settings(tmp_path):
     f = tmp_path / "settings.json"
-    f.write_text(json.dumps(EXISTING, indent=2) + "\n")
+    original = json.dumps(EXISTING, indent=2) + "\n"
+    f.write_text(original)
     before = json.loads(f.read_text())
     code, out = install("install", "--hooks", "--claude", "--settings", str(f))
     assert code == 0 and "added to" in out and "remove with: aad agent uninstall --hooks --claude --settings" in out
@@ -204,7 +205,7 @@ def test_install_hooks_scratch_settings(tmp_path):
     assert len(list(tmp_path.glob("settings.json.aad-backup-*"))) == 1
     code, out = install("uninstall", "--hooks", "--claude", "--settings", str(f))
     assert code == 0 and "removed 2" in out
-    assert json.loads(f.read_text()) == before
+    assert f.read_text() == original                                      # byte-identical again
 
 
 def test_install_hooks_refuses_unexpected_structure(tmp_path):
@@ -318,3 +319,11 @@ def test_mcp_over_stdio(state, proj):
     assert [o.get("id") for o in out] == [1, 2, 3, None]
     assert all(o["jsonrpc"] == "2.0" for o in out) and out[3]["error"]["code"] == -32700
     assert "2 open pin(s)" in out[2]["result"]["content"][0]["text"]
+
+
+def test_skill_and_packet_prompt_mention_the_hook(tmp_path):
+    for tool in ("claude", "codex"):
+        body = agents.render(tool)
+        assert 'a note that starts "aad review for <model>"' in body and "`aad mcp`" in body
+    doc, _ = send_packet(tmp_path / "p", [pin(1)])
+    assert "also sees this packet on its own at the next prompt" in doc["prompt"]
