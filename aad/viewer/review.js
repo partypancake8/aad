@@ -499,17 +499,28 @@ export function initReview(V){
     }
     renderMarkers();
   }
+  // what a pin's fly to frames, in world space: {point, radius (mm, the spot's own size), edge: 'current' | 'stored' |
+  // 'gone' | null}. An edge pin frames the edge as it is now (the re-match on a newer build, else the stored edge on
+  // its own build) by that edge's bounding sphere; when the edge no longer exists it frames the pin's anchor point
+  // like a point pin. A frame is never derived from a stale stored polyline.
+  let lastSpot=null;
+  function pinSpot(p,m){
+    m.updateMatrixWorld();const anchor=m.localToWorld(new THREE.Vector3(...p.anchor.local));
+    if(p.kind!=='edge'||!p.edge?.points?.length)return {point:anchor,radius:0,edge:null,mark:anchor};
+    const em=edgeMatch(p);if(em?.changed)return {point:anchor,radius:0,edge:'gone',mark:anchor};
+    const pts=(em?em.pts:p.edge.points).map(q=>(q.isVector3?q.clone():new THREE.Vector3(...q)).applyMatrix4(m.matrixWorld));
+    const s=new THREE.Sphere().setFromPoints(pts);
+    return {point:s.center,radius:s.radius,edge:em?'current':'stored',mark:anchor};
+  }
   function flyToPin(p){
     hotPin=p.id;showPins();
     const k=p.anchor?keyFor(p.anchor.part):null,keys=p.parts.map(keyFor).filter(Boolean);
-    // the pin's point with its surroundings: about 4 edge lengths for an edge pin, 40 mm for a point pin (never the
-    // whole of a large part); a region pin frames its parts. The shared target routine picks the clearest view and
-    // fades the rest when the spot is still hidden.
+    // the pin's spot with its surroundings (never the whole of a large part); a region pin frames its parts. The
+    // shared target routine picks the clearest view and fades the rest when the spot is still hidden.
     V.camAction(()=>{
-      if(k){const m=meshOf(k);m.updateMatrixWorld();const w=m.localToWorld(new THREE.Vector3(...p.anchor.local));
-        const r=p.kind==='edge'&&p.edge?.length_mm>0?Math.max(5,4*p.edge.length_mm):40;
-        V.showTarget({keys:[k],point:w,radius:r,name:`pin #${p.n} (${V.nodes.get(k)?.leaf?.name||k})`});}
-      else if(keys.length)V.showTarget({keys,name:`pin #${p.n}`});
+      if(k){const m=meshOf(k),sp=pinSpot(p,m);lastSpot={pin:p.id,edge:sp.edge,point:sp.point.toArray(),radius:sp.radius};
+        V.showTarget({keys:[k],point:sp.point,radius:sp.radius,mark:sp.mark,kind:'pin',name:`pin #${p.n} (${V.nodes.get(k)?.leaf?.name||k})`});}
+      else if(keys.length)V.showTarget({keys,kind:'pin',name:`pin #${p.n}`});
       else if(p.anchor)V.flyToPoint(p.anchor.world);
     });
     if(k)V.select(k);else if(keys.length)V.select(keys[0]);
@@ -1159,8 +1170,8 @@ export function initReview(V){
     V.select(k);
     const lb=evidenceBox(w);
     V.camAction(()=>{if(lb.isEmpty()||w.kind==='floating'||w.kind==='triangle_jump')V.focusKey(k);
-      else{mesh.updateMatrixWorld();const wb=lb.clone().applyMatrix4(mesh.matrixWorld),sz=wb.getSize(new THREE.Vector3()).length();
-        wb.expandByScalar(Math.max(6,sz*0.6));V.showTarget({keys:[k],box:wb});}});
+      else{mesh.updateMatrixWorld();const wb=lb.clone().applyMatrix4(mesh.matrixWorld);
+        V.showTarget({keys:[k],box:wb,kind:'evidence'});}});
     V.commit();
     document.querySelectorAll('#diff-list .warnrow').forEach(el=>el.classList.toggle('on',el.dataset.warn===evSel));
     V.dirty();
@@ -1416,7 +1427,7 @@ export function initReview(V){
       evidence:evSel?{warn:evSel,marks:evGroup.children.map(o=>o.userData.evidence||o.type),dots:evGroup.children.filter(o=>o.userData.evidence==='dot').length,
         label:evGroup.children.map(o=>o.element?.textContent).filter(Boolean).join(' '),tinted:evGroup.children.filter(o=>o.userData.evidence==='tint').reduce((n,o)=>n+o.geometry.attributes.position.count/3,0),
         part:evMesh?.userData.key||null}:null,
-      editor:editorState(),pinsShown,occluded:[...occluded].filter(id=>markers.get(id)?.visible),occRuns,dimOccluded:dimOcc,fanRuns,fanned:[...fan.keys()],partHidden:[...partHidden].filter(([,v])=>v).map(([k])=>k),ghost:ghost.children.length,ghostVisible:ghost.visible,
+      editor:editorState(),lastSpot,pinsShown,occluded:[...occluded].filter(id=>markers.get(id)?.visible),occRuns,dimOccluded:dimOcc,fanRuns,fanned:[...fan.keys()],partHidden:[...partHidden].filter(([,v])=>v).map(([k])=>k),ghost:ghost.children.length,ghostVisible:ghost.visible,
       revisions:{selected:revSel,preselected:revPre,peek:revPeek,rows:(server?.baselines||[]).map(b=>({id:b.id,kind:b.kind,differ:revRows.find(r=>r.id===b.id)?.differ??null}))},
       holo:{visible:holo.visible,parts:new Set(holo.children.map(o=>o.userData.holoOf)).size,edges:holo.children.filter(o=>o.userData.holo==='edge').length,
         wire:holo.children.filter(o=>o.userData.holo==='wire').length,kinds:[...new Set(holo.children.map(o=>o.userData.holo))].sort(),

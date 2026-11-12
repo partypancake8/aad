@@ -1620,10 +1620,28 @@ function clearUnfaded(m){
 // ---- going to a target (Fit sel, double-click, a pin's fly to, a detector warning, a changed part in Revisions, a
 // tour stop): one routine. The camera fits the target looking along the current direction; then a bounded sample
 // (at most TARGET_SAMPLES points on the target, one ray each per direction tried, run once, never per frame) says
-// what share of it is seen. Under half: the six axis views are tried and the clearest taken. Still under half: every
-// other part fades (the focus look above) when Options "Fade other parts when the target is hidden" is on. Fit and
-// Home never fade and end a target fade. ----
-const TARGET_SAMPLES=48,TARGET_SCAN=40000;
+// whether it is hidden (targetHidden below). Hidden: the six axis views are tried and the first one that shows it
+// taken (else the one that sees most of it). Still hidden: every other part fades (the focus look above) when Options
+// "Fade other parts when the target is hidden" is on. Fit and Home never fade and end a target fade. ----
+const TARGET_SAMPLES=64,TARGET_SCAN=40000;
+// A target counts as hidden from a direction when (a) under VIS_SHARE of its sample points are seen, or (b) an opaque
+// part covers its centre (a pin: the pin's point), or (c) an opaque part covers a band across it: a VIS_GRID x VIS_GRID
+// grid of rays over the target's projected box, and a full row or column of grid cells on the target (at least two)
+// all behind an opaque part, with seen target cells on both sides of it, cuts the target in two. The test runs once
+// per go-to-target call from the camera's destination (never per frame); the grid only for directions that pass (a)
+// and (b), and every ray of one call counts against TARGET_RAY_CAP.
+const VIS_SHARE=0.6,VIS_GRID=16,TARGET_RAY_CAP=2400;
+// Frame size: one clamp for every go-to-target call. frame radius = clamp(target radius x FRAME_MARGIN, min, the
+// whole model's radius), where the frame radius is the half-height of the view (ortho) or of the perspective cone at
+// the target. Plain Fit (the whole model) and Home do not use it.
+const FRAME_MARGIN=1.6;       // the target spans about 60 % of the view's smaller side
+const FRAME_MIN_MM=30;        // never closer than 60 mm across: a screw shows what it holds and its neighbours
+const FRAME_MIN_PART=0.08;    // a part (Fit sel, double-click, Fit to part, Revisions rows, tour stops): at least 8 % of the model radius
+const FRAME_MIN_SPOT=0.12;    // a pin or detector evidence: at least 12 %, the feature it sits on and its neighbours
+function frameRadius(tr,kind='part'){
+  const min=Math.max(FRAME_MIN_MM,(kind==='part'?FRAME_MIN_PART:FRAME_MIN_SPOT)*radius);
+  return Math.min(radius,Math.max(min,tr*FRAME_MARGIN));
+}
 const leavesOf=keys=>{const s=new Set();for(const k of keys||[])for(const l of (nodes.get(k)?.leaves||[k]))s.add(l);return s;};
 // sample points of the target: vertices of its parts (inside `box` when given), spread evenly, plus `point`; at most
 // TARGET_SCAN vertices are looked at over all parts (a large assembly takes every n-th part), clipped-away points
@@ -1670,39 +1688,110 @@ function viewClearance(keys,dir){
   const c=b.getCenter(new THREE.Vector3()),r=Math.max(2,b.getBoundingSphere(new THREE.Sphere()).radius)*1.25;
   return clearanceOf(targetSamples(L,null,null),L,eyeFor(c,r,dir.clone().normalize()));
 }
+// one ray from `from` along unit `dir`: 0 when it meets no target part, 1 when the first opaque thing it meets is the
+// target, 2 when an opaque part that is not the target is in front of the target (clear and section-removed hits
+// never count)
+const _gr=new THREE.Raycaster();
+function rayTarget(from,dir,leaves,list){
+  _gr.set(from,dir);_gr.far=Infinity;_gr.firstHitOnly=!clipPlanes.length;let blocked=false;
+  for(const h of _gr.intersectObjects(list,false)){
+    if(!clipPlanes.every(p=>p.distanceToPoint(h.point)>=0))continue;
+    if(leaves.has(h.object.userData.key))return blocked?2:1;
+    if(!clearUnfaded(h.object))blocked=true;
+  }
+  return 0;
+}
+// (b): an opaque part that is not the target between the eye and the point m
+function coveredPoint(m,leaves,eye,list){
+  const dv=m.clone().sub(eye),L=dv.length(),eps=Math.max(0.05,radius*1e-4);if(!(L>eps))return false;
+  _vc.set(eye,dv.divideScalar(L));_vc.far=L-eps;
+  for(const h of _vc.intersectObjects(list,false)){
+    if(leaves.has(h.object.userData.key)||clearUnfaded(h.object))continue;
+    if(!clipPlanes.every(p=>p.distanceToPoint(h.point)>=0))continue;
+    return true;
+  }
+  return false;
+}
+// (c): the ray grid over the target's projected box seen from `eye` looking along -d; returns {cut, rays, cells}
+function cutAcross(pts,leaves,c,eye,d,list){
+  const up=Math.abs(d.z)>0.99?new THREE.Vector3(0,1,0):new THREE.Vector3(0,0,1);
+  const rt=new THREE.Vector3().crossVectors(up,d).normalize(),uv=new THREE.Vector3().crossVectors(d,rt).normalize();
+  const ortho=cam.isOrthographicCamera,D=eye.clone().sub(c).dot(d),q=new THREE.Vector3(),dp=new THREE.Vector3();
+  let u0=Infinity,u1=-Infinity,v0=Infinity,v1=-Infinity;
+  for(const p of pts){
+    if(ortho)q.copy(p).sub(c);
+    else{dp.copy(p).sub(eye);const depth=-dp.dot(d);if(!(depth>1e-6))continue;q.copy(eye).addScaledVector(dp,D/depth).sub(c);}
+    const u=q.dot(rt),v=q.dot(uv);u0=Math.min(u0,u);u1=Math.max(u1,u);v0=Math.min(v0,v);v1=Math.max(v1,v);
+  }
+  if(!(u1-u0>1e-6&&v1-v0>1e-6))return {cut:false,rays:0};
+  const G=VIS_GRID,du=(u1-u0)/G,dvv=(v1-v0)/G,cell=[],o=new THREE.Vector3(),dir=new THREE.Vector3();
+  for(let j=0;j<G;j++){const row=[];for(let i=0;i<G;i++){
+    const w=c.clone().addScaledVector(rt,u0+(i+0.5)*du).addScaledVector(uv,v0+(j+0.5)*dvv);
+    if(ortho){o.copy(w).addScaledVector(d,D);dir.copy(d).negate();}else{o.copy(eye);dir.copy(w).sub(eye).normalize();}
+    row.push(rayTarget(o,dir,leaves,list));}cell.push(row);}
+  // a line of cells (row or column) on the target, all behind an opaque part, with seen target cells on both sides
+  const band=(get)=>{
+    for(let a=0;a<G;a++){let on=0,occ=0;for(let b=0;b<G;b++){const x=get(a,b);if(x){on++;if(x===2)occ++;}}
+      if(on<2||occ<on)continue;
+      let lo=false,hi=false;for(let a2=0;a2<G;a2++)for(let b=0;b<G;b++)if(get(a2,b)===1){if(a2<a)lo=true;if(a2>a)hi=true;}
+      if(lo&&hi)return true;}
+    return false;};
+  const cut=band((a,b)=>cell[b][a])||band((a,b)=>cell[a][b]);   // a column (vertical band), then a row
+  return {cut,rays:G*G,cells:cell.map(r=>r.join('')).join('/')};
+}
+// is the target hidden from the eye looking along -d? {seen, centre, cut, hidden, rays}; the grid (c) runs only when
+// (a) and (b) pass and the ray budget allows
+function targetHidden(pts,leaves,c,mark,eye,d,budget){
+  const list=meshList.filter(m=>effVisible(m)&&!prepPending.has(m.geometry));
+  const seen=clearanceOf(pts,leaves,eye),centre=coveredPoint(mark||c,leaves,eye,list);let rays=pts.length+1,cut=false,cells=null;
+  if(seen>=VIS_SHARE&&!centre&&budget-rays>=VIS_GRID*VIS_GRID){const g=cutAcross(pts,leaves,c,eye,d,list);cut=g.cut;rays+=g.rays;cells=g.cells;}
+  PERF.targetRays=(PERF.targetRays||0)+rays-pts.length;          // clearanceOf counted its own
+  return {seen,centre,cut,hidden:seen<VIS_SHARE||centre||cut,rays,cells};
+}
 const AXES=[['+X',[1,0,0]],['-X',[-1,0,0]],['+Y',[0,1,0]],['-Y',[0,-1,0]],['+Z',[0,0,1]],['-Z',[0,0,-1]]];
-// t: {keys, box (world Box3, default the parts' box), point (world Vector3) + radius (mm: frame that sphere), dir
+// t: {keys, box (world Box3, default the parts' box), point (world Vector3) + radius (mm: the spot's own size), kind
+// ('part' | 'pin' | 'evidence': the frame's lower bound, see frameRadius), dir
 // (preferred view direction, default the current one), name (for the chip), fade: 'auto' | 'never'}. The camera
 // move is animated unless animate is false. Returns {dir, axis, seen, faded, samples} or null with nothing to frame.
 function showTarget(t,animate=true){
   if(fishOn())return null;
   exitCamMode();
   const keys=(t.keys||[]).filter(k=>nodes.has(k)),leaves=leavesOf(keys);
-  let c,r,box=null;
-  if(t.point&&t.radius){c=t.point.clone();r=t.radius;box=new THREE.Box3().setFromCenterAndSize(c,new THREE.Vector3(1,1,1).multiplyScalar(2*r));}
+  let c,tr,box=null;const kind=t.kind||'part';
+  if(t.point){c=t.point.clone();tr=t.radius||0;}
   else{
     box=t.box?t.box.clone():new THREE.Box3();if(!t.box)for(const k of keys){const n=nodes.get(k);if(n)box.expandByObject(n.obj);}
     if(box.isEmpty())return null;
-    c=box.getCenter(new THREE.Vector3());r=Math.max(2,box.getBoundingSphere(new THREE.Sphere()).radius)*1.25;
+    c=box.getCenter(new THREE.Vector3());tr=box.getBoundingSphere(new THREE.Sphere()).radius;
   }
+  const r=frameRadius(tr,kind);
+  if(t.point||t.box)box=new THREE.Box3().setFromCenterAndSize(c,new THREE.Vector3(1,1,1).multiplyScalar(2*r));   // samples: the target inside the frame
   bakeOrbit();
   const t0=performance.now();
-  let d=(t.dir?t.dir.clone():cam.position.clone().sub(camTarget())).normalize(),axis=null,seen=1;
+  let d=(t.dir?t.dir.clone():cam.position.clone().sub(camTarget())).normalize(),axis=null,seen=1,hidden=false,first=null,rays=0;
+  const mark=t.mark||t.point||null;
   const pts=leaves.size?targetSamples(leaves,t.point||t.box?box.clone().expandByScalar(0.01*r+0.01):null,t.point||null):[];
   if(pts.length){
-    seen=clearanceOf(pts,leaves,eyeFor(c,r,d));
-    if(seen<0.5){
-      let best=null;
-      for(const [n,a] of AXES){const ad=new THREE.Vector3(...a),s=clearanceOf(pts,leaves,eyeFor(c,r,ad)),score=s+0.01*ad.dot(d);if(!best||score>best.score)best={n,ad,s,score};}
-      if(best&&best.s>seen){d=best.ad;axis=best.n;seen=best.s;}
+    let v=targetHidden(pts,leaves,c,mark,eyeFor(c,r,d),d,TARGET_RAY_CAP);rays+=v.rays;
+    first={seen:+v.seen.toFixed(3),centre:v.centre,cut:v.cut,cells:v.cells};seen=v.seen;hidden=v.hidden;
+    if(hidden){
+      // the axis views, the most-seen first (ties toward the current direction); the first that is not hidden wins
+      const cand=AXES.map(([n,a])=>{const ad=new THREE.Vector3(...a);return {n,ad,s:clearanceOf(pts,leaves,eyeFor(c,r,ad))};});
+      rays+=cand.length*pts.length;cand.sort((x,y)=>(y.s+0.01*y.ad.dot(d))-(x.s+0.01*x.ad.dot(d)));
+      let pick=null;
+      for(const a of cand){if(a.s<VIS_SHARE)break;
+        const w=targetHidden(pts,leaves,c,mark,eyeFor(c,r,a.ad),a.ad,TARGET_RAY_CAP-rays);rays+=w.rays;
+        if(!w.hidden){pick={...a,v:w};break;}}
+      if(pick){d=pick.ad;axis=pick.n;seen=pick.v.seen;hidden=false;}
+      else if(cand[0]&&cand[0].s>seen){d=cand[0].ad;axis=cand[0].n;seen=cand[0].s;}
     }
   }
   if(axis){cam.up.set(0,0,1);if(Math.abs(d.z)>0.99)cam.up.set(0,1,0);}
   placeCam(eyeFor(c,r,d),c,cam.isOrthographicCamera?OB/r:null,animate&&!SOFT);
   const fade=t.fade||'auto';let faded=false;
-  if(fade==='auto'&&seen<0.5&&OPTS.fadeHidden!==false&&keys.length){setFocus(keys,'target',t.name||nameOfKey(keys[0]));faded=true;}
+  if(fade==='auto'&&hidden&&OPTS.fadeHidden!==false&&keys.length){setFocus(keys,'target',t.name||nameOfKey(keys[0]));faded=true;}
   else endTargetFocus();
-  lastTarget={dir:d.toArray(),axis,seen:+seen.toFixed(3),faded,samples:pts.length,r:+r.toFixed(3),ms:+(performance.now()-t0).toFixed(1)};
+  lastTarget={dir:d.toArray(),axis,seen:+seen.toFixed(3),hidden,first,rays,faded,samples:pts.length,r:+r.toFixed(3),tr:+tr.toFixed(3),kind,c:c.toArray().map(v=>+v.toFixed(3)),ms:+(performance.now()-t0).toFixed(1)};
   return lastTarget;
 }
 let lastTarget=null;
@@ -2022,7 +2111,7 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
   // link the shader programs an object tree needs without blocking (parallel compile where the driver has it)
   compileAsync:o=>renderer?renderer.compileAsync(o,cam,scene).catch(()=>{}):Promise.resolve(),get moving(){return camMoving;},perf:PERF};}
 // a small handle for scripted checks (CDP) and the console
-window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clearSel,undo,redo,commit,get cube(){return cube;},
+window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clearSel,undo,redo,commit,showTarget,get cube(){return cube;},
   meshes:()=>meshList,toScreen:p=>{const r=canvas.getBoundingClientRect(),v=new THREE.Vector3(...p).project(cam);return [r.left+(v.x+1)/2*r.width,r.top+(1-v.y)/2*r.height];},
   get review(){return R;},panes:()=>({...paneWidths(),saved:{...pane}}),get weight(){return Wt;},get lastCopied(){return lastCopied;},
   edgeAt:(x,y,o={})=>{const e={clientX:x,clientY:y,shiftKey:!!o.shift,metaKey:!!o.meta};edgeLinear=!!o.linear;try{if(forceFace(e))return null;const ed=pickEdgeNow(e,pickHitNow(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px,seg:ed.seg}:null;}finally{edgeLinear=false;}},
@@ -2036,7 +2125,7 @@ window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clear
   lensHits:(x,y)=>{if(!fishOn())return null;const d=fishDir({clientX:x,clientY:y});if(!d)return [];ray.set(new THREE.Vector3(...camMode.eye),d);
     const obs=new Set();for(const o of observerObjs())o.traverse(m=>obs.add(m));
     return ray.intersectObjects(meshList.filter(m=>effVisible(m)&&!obs.has(m)),false).slice(0,6).map(h=>(h.object.userData.leaf?h.object.userData.leaf.component:h.object.name)+(h.object.material.transparent?' (clear)':'')+' @'+h.distance.toFixed(1));},
-  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,up:cam.up.toArray(),screenUp:(cam.updateMatrixWorld(),new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1).toArray()),orbitMode:OPTS.orbit,pivotMode:OPTS.pivot,pickThrough:OPTS.through!==false,focus:focusKeys?{parts:focusKeys.size,faded:meshList.filter(m=>!focusKeys.has(m.userData.key)).length,outlines:focusLines.length,owner:focusOwner,name:focusName}:null,
+  state:()=>({ready,nav:OPTS.nav,background:'#'+scene.background.getHexString(),clearColor:renderer?'#'+renderer.getClearColor(new THREE.Color()).getHexString():null,appearance:cadAppearance?.style,edges:showEdges,version:M?.version,loadedMtime,soft:SOFT,meshes:meshList.length,cam:cam.position.toArray(),target:camTarget().toArray(),zoom:cam.zoom,up:cam.up.toArray(),screenUp:(cam.updateMatrixWorld(),new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld,1).toArray()),orbitMode:OPTS.orbit,pivotMode:OPTS.pivot,pickThrough:OPTS.through!==false,frame:{margin:FRAME_MARGIN,minMm:FRAME_MIN_MM,part:FRAME_MIN_PART,spot:FRAME_MIN_SPOT,model:+radius.toFixed(3)},focus:focusKeys?{parts:focusKeys.size,faded:meshList.filter(m=>!focusKeys.has(m.userData.key)).length,outlines:focusLines.length,owner:focusOwner,name:focusName}:null,
     goTarget:lastTarget,focusChip:$('focus-chip')&&!$('focus-chip').hidden?$('focus-chip').textContent.replace(/\s+/g,' ').trim():null,fadeHidden:OPTS.fadeHidden!==false,
     pivot:pivotFor(null)?.toArray()||null,viewCentre:viewCentre()?.toArray()||null,pivotShown:pivotObj.visible,pivotAt:pivotObj.visible?pivotObj.position.toArray():null,
     hidden:[...vis].filter(([,v])=>!v).map(([k])=>k),clip:clipPlanes.map(p=>[p.normal.toArray(),p.constant]),

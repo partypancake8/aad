@@ -806,7 +806,10 @@ const lastPin=async page=>{const p=(await snapPins(page)).p;return p[p.length-1]
 async function pointOn(page,key){
   return page.evaluate(k=>{const r=document.querySelector('#c').getBoundingClientRect(),hits=[];
     for(let y=r.top+50;y<r.bottom-50;y+=9)for(let x=r.left+50;x<r.right-50;x+=9){const i=viewer.pickAt(x,y);if(i&&i.part.key===k)hits.push([x,y]);}
-    if(!hits.length)return null;hits.sort((a,b)=>a[1]-b[1]||a[0]-b[0]);const m=hits[Math.floor(hits.length/2)];return {x:m[0],y:m[1]};},key);
+    if(!hits.length)return null;hits.sort((a,b)=>a[1]-b[1]||a[0]-b[0]);
+    // a point on the face, not one an edge pick in Pin mode would take (whatever the frame the camera came to)
+    const m=hits[Math.floor(hits.length/2)],off=[...hits.slice(Math.floor(hits.length/2)),...hits.slice(0,Math.floor(hits.length/2)).reverse()].find(([x,y])=>!viewer.edgeAt(x,y))||m;
+    return {x:off[0],y:off[1]};},key);
 }
 async function pinAt(X,P,cls,note=''){
   const {page}=X;await page.locator('#modes [data-mode=pin]').click();await page.mouse.click(P.x,P.y);
@@ -1147,6 +1150,8 @@ async function checkMeasureEntities(page,ok){
  // (3) the 5 mm wall of bracket (y 15..20, top at z 35), seen from above: its two long top edges, clicked at
  // different places along them, read the wall thickness, not the distance between the clicks
  await page.evaluate(()=>{viewer.clearSel();viewer.commit();});await page.locator('#tabs [data-tab=pins]').click();
+ // pin markers off while clicking measure points: a marker (or its fanned bubble) over a clicked point takes the click
+ await page.evaluate(()=>viewer.review.setPinsShown(false));
  await page.locator('#modes [data-mode=measure]').click();await page.waitForTimeout(150);
  assert.equal(await page.locator('#meas-keep').isChecked(),true,'Keep visible is on in Measure mode');
  await lookDown(page,[0,17.5,35],14);await page.waitForTimeout(400);
@@ -1258,6 +1263,7 @@ async function checkMeasureClear(page,ok){
  await page.reload();await page.waitForFunction(()=>window.viewer?.state().ready&&window.viewer.review,null,{timeout:120000});await page.waitForTimeout(800);
  assert.equal((await snapMeas(page)).length,0,'after a reload no unattached measurement survives');
  assert(await page.evaluate(id=>viewer.review.snapshot().p.find(p=>p.id===id)?.measure?.kind==='edge_edge',att.pin),'the attached one is still in its pin');
+ await page.evaluate(()=>viewer.review.setPinsShown(true));await page.waitForTimeout(200);
  ok('measurements: Esc cancels then leaves, row delete and Delete key (one undo step each, graphics gone), hidden outside Measure unless kept, attached shows with its pin, Clear all in one undo step, labels never overlap, nothing unattached survives a reload');
 }
 
@@ -1515,6 +1521,7 @@ async function checkStaleEdgePins(X){
   await page.locator('#tabs [data-tab=pins]').click();await page.locator('#modes [data-mode=select]').click();
   const pinsFile=path.join(X.rd,'pins.json'),doc=JSON.parse(fs.readFileSync(pinsFile,'utf8'));
   const base=doc.pins.find(p=>p.anchor&&p.anchor.part.node===X.A.node)||doc.pins.find(p=>p.anchor);assert(base,'a pin with an anchor to copy the part from');
+  const pinDoc0=doc.pins.find(p=>p.kind==='point'&&p.anchor&&p.status!=='resolved');assert(pinDoc0,'an open point pin to compare frames with');
   const key=await keyOfNode(page,base.anchor.part.node);
   const rec=(await page.evaluate(k=>viewer.edgeChains(k),key)).sort((a,b)=>b.length_mm-a.length_mm)[0];assert(rec&&rec.length_mm>5,'a feature edge of the part');
   const mk=(n,edge,note)=>({...JSON.parse(JSON.stringify(base)),id:'p'+n,n,kind:'edge',status:'open',note,parent:undefined,history:undefined,measure:null,
@@ -1550,6 +1557,21 @@ async function checkStaleEdgePins(X){
     assert((await lines(S2)).length>0,'and on shows it again');
     const saved=JSON.parse(fs.readFileSync(pinsFile,'utf8')).pins.find(p=>p.id===S2);
     assert.deepEqual(saved.anchor.local,rec.midpoint,'the stored anchor is untouched');assert.deepEqual(saved.edge.points,gone.points,'and so is the stored edge');
+    // (r12 fix 1) a fly to frames the edge as it is now (the re-match) by its bounding sphere; when the edge is gone it
+    // frames the pin's anchor point like a point pin, never the stored polyline
+    const world=(k,pts)=>page.evaluate(([k,pts])=>{const m=viewer.meshes().find(x=>x.userData.key===k);m.updateMatrixWorld();
+      return pts.map(q=>m.localToWorld(new m.position.constructor(...q)).toArray());},[k,pts]);
+    const sph=P=>{const lo=[0,1,2].map(i=>Math.min(...P.map(q=>q[i]))),hi=[0,1,2].map(i=>Math.max(...P.map(q=>q[i]))),c=lo.map((v,i)=>(v+hi[i])/2);
+      return {c,r:Math.max(...P.map(q=>Math.hypot(q[0]-c[0],q[1]-c[1],q[2]-c[2])))};};
+    const fly=async id=>{await page.locator(`#pin-list li[data-pin=${id}] button[data-act=fly]`).click();await settle(page);
+      return {spot:(await X.rstate()).lastSpot,g:await page.evaluate(()=>viewer.state().goTarget)};};
+    const near=(a,b,tol=0.05)=>a.length===b.length&&a.every((v,i)=>Math.abs(v-b[i])<=tol);
+    const e1=sph(await world(key,rec.points)),f1=await fly(S1);
+    assert(f1.spot.pin===S1&&f1.spot.edge==='current'&&near(f1.g.c,e1.c)&&Math.abs(f1.spot.radius-e1.r)<0.05,
+      'fly to the re-matched edge frames that edge\'s bounding sphere: '+JSON.stringify({f1,e1}));
+    const [aw]=await world(key,[rec.midpoint]),f2=await fly(S2),pt=await fly(pinDoc0.id);
+    assert(f2.spot.edge==='gone'&&f2.spot.radius===0&&near(f2.g.c,aw),'fly to a pin whose edge is gone frames its anchor point: '+JSON.stringify({f2,aw}));
+    assert.equal(f2.g.r,pt.g.r,'with the frame of a point pin ('+pt.g.r+' mm), not '+(4*gone.length_mm).toFixed(0)+' mm from the stored edge');
     const rj=JSON.parse(review('--json')).open_pins,r1=rj.find(p=>p.id===S1),r2=rj.find(p=>p.id===S2);
     assert.equal(r1.edge_changed,false);assert.equal(r2.edge_changed,true,'aad review --json: edge_changed');
     assert.match(review(),/EDGE CHANGED: the pinned edge no longer exists in this form; the geometry changed here since the pin was made/);
@@ -1888,7 +1910,12 @@ function writeClearModel(file,build=1){
     // r11: a part shut inside an opaque housing (hidden from every side) and a clear enclosure panel in front of it
     'housing':[...BOX(-200,-30,0,-140,30,60),[0.15,0.15,0.17]],'inner gear':[...BOX(-180,-10,20,-160,10,40),[0.9,0.75,0.2]],
     // r11: a 0.6 mm opaque tab floating in front of the block face (a sub-millimetre edge on another part)
-    'tiny tab':[...BOX(-6.6,-14,10,-6,-13.4,10.6),[0.3,0.3,0.32]]};
+    'tiny tab':[...BOX(-6.6,-14,10,-6,-13.4,10.6),[0.3,0.3,0.32]],
+    // r12: an enclosure seen from -Y: a clear mesh panel, an opaque cage bar off the middle of the drum part (it cuts
+    // the part in two without covering its centre or its corners), an inner plate whose centre a small screw covers
+    'mesh panel':[...BOX(260,-40,0,340,-38,120),[0.7,0.8,0.9,0.3]],'cage bar':[...BOX(284,-50,0,290,-46,80),[0.1,0.1,0.12]],
+    'drum part':[...BOX(270,-10,20,330,10,60),[0.3,0.55,0.85]],'inner plate':[...BOX(270,-10,90,330,10,110),[0.5,0.7,0.4]],
+    'small screw':[...BOX(297,-14,97,303,-12,103),[0.2,0.2,0.22]]};
   const code=['import sys, json, numpy as np','from aad.review.glb import write_parts',
     'parts={k:(np.array(v[0],float),np.array(v[1]),v[2]) for k,v in json.loads(sys.argv[2]).items()}','write_parts(sys.argv[1], parts)'].join('\n');
   const g=spawnSync(PY,['-c',code,file,JSON.stringify(parts)],{encoding:'utf8',env:{...process.env,PYTHONPATH:REPO}});
@@ -2152,7 +2179,36 @@ async function targetChecks(C){
   assert(!s.g.faded&&s.focus===null,'with the option off nothing fades');
   assert.equal(await page.evaluate(()=>{try{return JSON.parse(localStorage.getItem('aad-viewer-options')).fadeHidden;}catch(e){return null;}}),false,'the choice is remembered');
   await page.locator('#options').click();await page.locator('#opt-fade').check();await page.keyboard.press('Escape');
-  // a pin's fly to frames its point with 40 mm around it (the base plate is 144 mm across)
+  // (r12 fix 2) one frame clamp: frame radius = clamp(target radius x 1.6, max(30 mm, 8 % of the model radius) for a part
+  // or 12 % for a pin, the model radius)
+  const FR=await page.evaluate(()=>viewer.state().frame),minPart=Math.max(FR.minMm,FR.part*FR.model),minSpot=Math.max(FR.minMm,FR.spot*FR.model);
+  assert(FR.margin===1.6&&FR.minMm===30&&FR.part===0.08&&FR.spot===0.12&&FR.model>200,'frame constants: '+JSON.stringify(FR));
+  const fitSelOn=async name=>{const k=await keyNamed(page,name);await page.evaluate(k=>{viewer.select(k);viewer.commit();},k);await page.locator('#fitsel').click();await page.waitForTimeout(500);
+    return page.evaluate(()=>viewer.state().goTarget);};
+  const near1=(a,b)=>Math.abs(a-b)<0.01;
+  let g=await fitSelOn('small screw');
+  assert(g.kind==='part'&&g.tr*1.6<minPart&&near1(g.r,minPart),'Fit sel on the small screw frames at least '+minPart.toFixed(1)+' mm, not the screw head alone: '+JSON.stringify(g));
+  g=await fitSelOn('base plate');
+  assert(near1(g.r,g.tr*1.6)&&g.r>minPart&&g.r<FR.model,'the base plate is framed at 1.6 x its radius: '+JSON.stringify(g));
+  g=await page.evaluate(()=>viewer.showTarget({point:new viewer.camera.position.constructor(0,0,0),radius:1e5},false));
+  assert(near1(g.r,FR.model),'a target larger than the model is framed at the model radius: '+JSON.stringify(g));
+  // (r12 fix 3) hidden is what the eye sees: from -Y the drum part shows every corner and its centre, but the opaque
+  // cage bar cuts it in two (a full column of the ray grid behind the bar, seen cells on both sides): hidden, so the
+  // clear +Y view is taken. The small screw covers the inner plate's centre: hidden too. The gear: under 60 % seen.
+  const fromMinusY=async(t)=>page.evaluate(t=>{const k=viewer.controls;k.enableDamping=false;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();
+    k.setLookAt(t[0],t[1]-400,t[2],t[0],t[1],t[2],false);k.update(0);viewer.commit();},t);
+  await fromMinusY([300,0,40]);g=await fitSelOn('drum part');
+  assert(g.first&&g.first.seen>=0.6&&g.first.centre===false&&g.first.cut===true,'from -Y the cage bar cuts the drum part in two: '+JSON.stringify(g));
+  assert(g.axis&&g.axis!=='-Y'&&!g.hidden&&!g.faded,'so a clear axis view is taken without a fade: '+JSON.stringify(g));
+  await fromMinusY([300,0,100]);g=await fitSelOn('inner plate');
+  assert(g.first&&g.first.seen>=0.6&&g.first.centre===true,'the small screw covers the inner plate\'s centre: '+JSON.stringify(g));
+  assert(g.axis&&!g.hidden&&!g.faded,'a clear axis view: '+JSON.stringify(g));
+  await fromMinusY([-170,0,30]);g=await fitSelOn('inner gear');
+  assert(g.first.seen<0.6&&g.hidden&&g.faded,'the gear shut in the housing: under 60 % seen, hidden from every side, faded: '+JSON.stringify(g));
+  assert(g.rays<=2400&&g.ms<250,'the visibility test is bounded: '+g.rays+' rays, '+g.ms+' ms');
+  const visNote=`drum part cut by the bar (${g.first.seen}) -> clear view, inner plate centre covered -> clear view, gear ${g.rays} rays ${g.ms} ms`;
+  await page.locator('#fit').click();await page.waitForTimeout(300);
+  // a pin's fly to frames its point with the pin minimum (12 % of the model radius, at least 30 mm) around it
   await page.evaluate(()=>{const k=viewer.controls;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();k.setLookAt(-38+300,-14-300,6+300,-38,-14,6,false);if(viewer.camera.isOrthographicCamera)k.zoomTo(4,false);k.update(0);viewer.commit();});
   await page.waitForTimeout(300);
   const [pp]=await toClient(page,[[-38,-14,6]]);
@@ -2166,8 +2222,8 @@ async function targetChecks(C){
   s=await page.evaluate(()=>({g:viewer.state().goTarget,t:viewer.state().target}));
   assert(Math.hypot(...s.t.map((v,i)=>v-pin.anchor.world[i]))<0.5,'fly to centres the pin point: '+JSON.stringify(s.t));
   assert.equal(pin.kind,'point','a point pin: '+JSON.stringify(pin.edge&&pin.edge.length_mm));
-  assert.equal(s.g.r,40,'a point pin is framed with 40 mm around it: '+JSON.stringify(s.g));
-  ok(`going to a target: Fit sel on the block hidden from +X takes a clear axis view without a fade; the gear inside the opaque housing fades the rest (chip "Focused on inner gear. Show whole model"), a click reaches it, Esc and the chip restore opacity exactly, Fit ends the fade, Options off is remembered; a pin's fly to frames 40 mm around its point`);
+  assert(s.g.kind==='pin'&&s.g.tr===0&&near1(s.g.r,minSpot),'a point pin is framed with the pin minimum around it: '+JSON.stringify(s.g));
+  ok(`going to a target: Fit sel on the block hidden from +X takes a clear axis view without a fade; the gear inside the opaque housing fades the rest (chip "Focused on inner gear. Show whole model"), a click reaches it, Esc and the chip restore opacity exactly, Fit ends the fade, Options off is remembered; frame clamp (model radius ${FR.model.toFixed(1)} mm): small screw ${minPart.toFixed(1)} mm, base plate 1.6 x radius, a larger target the model radius, a point pin ${minSpot.toFixed(1)} mm; visibility: ${visNote}`);
 }
 // (r11 fix 2) edge snapping never hijacks a click: in Pin mode a pointer on the block face 5 px from the 0.6 mm tab
 // in front of it takes the block face (the tab's chain is under 2 mm), Cmd+click takes that nearest edge anyway; the

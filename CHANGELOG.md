@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Framing a target: one clamp for every go-to-target call, frame radius = clamp(target radius x 1.6, max(30 mm,
+  8 % of the model radius) for a part or 12 % for a pin or detector evidence, the model radius), so a small screw
+  shows its surroundings and a pin shows the feature it sits on. An edge pin's fly-to frames the edge as it is now
+  (the re-match on a newer build), or the pin's point when that edge is gone; never the stale stored edge.
+- The hidden test matches what the eye sees: a target counts as hidden when under 60 % of its sample points are
+  seen, when an opaque part covers its centre (a pin: its point), or when an opaque part runs across it (a full row
+  or column of a 16 x 16 ray grid behind it, seen cells on both sides). At most 2400 rays, once per call.
 - Going to a target shows it: Fit sel, double-click, Fit to part, a pin's fly-to (its point with 40 mm or 4 edge
   lengths around it), a detector warning and a changed part in Revisions share one routine. A bounded occlusion
   sample, run once after the move, takes the clearest axis view when the target is hidden and fades every other
