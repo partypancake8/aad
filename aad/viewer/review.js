@@ -571,15 +571,65 @@ export function initReview(V){
   $('rev-clear').onclick=async()=>{
     try{const r=await post('/review/revisions/clear',{});server.baselines=r.baselines;revKey='';renderBaselines();
       toast(`Cleared ${r.removed.length} old revision${r.removed.length===1?'':'s'}; reviewed ones and the current build stay.`);}catch(e){}};
-  // the hologram: green feature edges (bright where seen, dimmer through the solid model), a fine wireframe on
-  // smaller parts and faint additive faces. Line depth is pulled a hair toward the camera so old edges that lie on
-  // the new surface do not shimmer; faces skip the depth test. On a light background it is a darker green with
-  // normal blending (additive green washes out on white).
+  // the hologram: green feature edges (the same EdgesGeometry crease edges as the Edges display) plus the
+  // silhouette of curved surfaces for the current view, bright where seen and dimmer through the solid model, over
+  // faint additive faces. No tessellation wireframe: flat faces show no triangle diagonals. Line depth is pulled a
+  // hair toward the camera so old edges that lie on the new surface do not shimmer; faces skip the depth test. On a
+  // light background it is a darker green with normal blending (additive green washes out on white).
   const holo=new THREE.Group();holo.name='Revision hologram';holo.visible=false;V.scene.add(holo);
   const oldSolid=new THREE.Group();oldSolid.name='Old revision (flick)';oldSolid.visible=false;V.scene.add(oldSolid);
   let holoKey='',holoDark=null,holoLoading=null;
   const revCache=new Map();                                    // revision id -> Promise of Map(part name -> [{geometry, matrix}])
-  const edgeCache=new WeakMap(),wireCache=new WeakMap();
+  const edgeCache=new WeakMap(),silCache=new WeakMap();
+  // silhouette candidates of a geometry: the smooth edges (two faces meeting under the 35 degree crease angle, not
+  // coplanar) with both face normals; an edge is on the silhouette when one face looks at the camera and the other
+  // looks away. Vertices are welded by position, since GLB meshes split them at UV and normal seams.
+  const SIL_MAX_TRIS=400000,COS_CREASE=Math.cos(35*Math.PI/180);
+  function silData(geo){
+    if(silCache.has(geo))return silCache.get(geo);
+    const pos=geo.attributes.position,idx=geo.index,nt=idx?idx.count/3:pos.count/3;let out=null;
+    if(nt<=SIL_MAX_TRIS){
+      const weld=new Map(),vid=new Int32Array(pos.count),P=[];let q=0;
+      const bb=(geo.boundingBox||(geo.computeBoundingBox(),geo.boundingBox)),tol=Math.max(1e-6,bb.getSize(new THREE.Vector3()).length()*1e-6);
+      for(let i=0;i<pos.count;i++){const k=Math.round(pos.getX(i)/tol)+','+Math.round(pos.getY(i)/tol)+','+Math.round(pos.getZ(i)/tol);
+        let id=weld.get(k);if(id===undefined){id=q++;weld.set(k,id);P.push(pos.getX(i),pos.getY(i),pos.getZ(i));}vid[i]=id;}
+      const FN=new Float32Array(nt*3),edges=new Map(),a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3();
+      for(let t=0;t<nt;t++){
+        const v=[0,1,2].map(j=>vid[idx?idx.getX(3*t+j):3*t+j]);
+        a.fromArray(P,v[0]*3);b.fromArray(P,v[1]*3);c.fromArray(P,v[2]*3);c.sub(b);b.sub(a);b.cross(c);const L=b.length();
+        if(L<1e-12)continue;b.divideScalar(L);FN[3*t]=b.x;FN[3*t+1]=b.y;FN[3*t+2]=b.z;
+        for(let j=0;j<3;j++){const u=v[j],w=v[(j+1)%3];if(u===w)continue;const key=u<w?u*q+w:w*q+u,e=edges.get(key);
+          if(e===undefined)edges.set(key,[u,w,t,-1]);else if(e[3]===-1)e[3]=t;else e[3]=-2;}
+      }
+      const A=[],N=[];
+      for(const [u,w,f1,f2] of edges.values()){
+        if(f2<0)continue;const d=FN[3*f1]*FN[3*f2]+FN[3*f1+1]*FN[3*f2+1]+FN[3*f1+2]*FN[3*f2+2];
+        if(d<COS_CREASE||d>0.99999)continue;                  // creases are feature edges already; coplanar never turn
+        A.push(P[3*u],P[3*u+1],P[3*u+2],P[3*w],P[3*w+1],P[3*w+2]);N.push(FN[3*f1],FN[3*f1+1],FN[3*f1+2],FN[3*f2],FN[3*f2+1],FN[3*f2+2]);
+      }
+      if(A.length)out={A:new Float32Array(A),N:new Float32Array(N)};
+    }
+    silCache.set(geo,out);return out;
+  }
+  const silObjs=[],_inv=new THREE.Matrix4(),_eye=new THREE.Vector3(),_dir=new THREE.Vector3();let silSig='';
+  function updateSilhouettes(camera){
+    if(!holo.visible||!silObjs.length)return;
+    const sig=camera.matrixWorld.elements.join(',')+(camera.isOrthographicCamera?'o':'p');if(sig===silSig)return;silSig=sig;
+    for(const o of silObjs){
+      const {A,N}=o.userData.sil,out=o.geometry.attributes.position.array;
+      _inv.copy(o.matrix).invert();const ortho=camera.isOrthographicCamera;
+      if(ortho){camera.getWorldDirection(_dir);_dir.transformDirection(_inv);}else _eye.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(_inv);
+      let k=0;
+      for(let e=0,n=A.length/6;e<n;e++){
+        const i=6*e;let vx,vy,vz;
+        if(ortho){vx=_dir.x;vy=_dir.y;vz=_dir.z;}else{vx=(A[i]+A[i+3])/2-_eye.x;vy=(A[i+1]+A[i+4])/2-_eye.y;vz=(A[i+2]+A[i+5])/2-_eye.z;}
+        const d1=N[i]*vx+N[i+1]*vy+N[i+2]*vz,d2=N[i+3]*vx+N[i+4]*vy+N[i+5]*vz;
+        if(d1*d2<=0&&(d1!==0||d2!==0)){for(let j=0;j<6;j++)out[k+j]=A[i+j];k+=6;}
+      }
+      o.geometry.setDrawRange(0,k/3);o.geometry.attributes.position.needsUpdate=true;o.userData.silCount=k/6;
+    }
+  }
+  {const prev=V.scene.onBeforeRender;V.scene.onBeforeRender=function(r,sc,cam,...rest){if(prev)prev.call(this,r,sc,cam,...rest);updateSilhouettes(cam);};}
   const bias=m=>{m.onBeforeCompile=sh=>{sh.vertexShader=sh.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n  gl_Position.z-=3e-6*gl_Position.w;');};m.customProgramCacheKey=()=>'holo-bias';return m;};
   const HM={};
   function holoMats(dark){
@@ -587,11 +637,10 @@ export function initReview(V){
     for(const m of Object.values(HM))m.dispose();
     HM.edge=bias(new THREE.LineBasicMaterial({color:col,transparent:true,opacity:1,blending:add,depthWrite:false}));
     HM.hidden=new THREE.LineBasicMaterial({color:col,transparent:true,opacity:dark?0.3:0.35,blending:add,depthWrite:false,depthTest:false});
-    HM.wire=bias(new THREE.LineBasicMaterial({color:col,transparent:true,opacity:dark?0.1:0.12,blending:add,depthWrite:false}));
     HM.face=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:dark?0.04:0.05,blending:add,depthWrite:false,depthTest:false,side:THREE.DoubleSide});
     HM.solid=new THREE.MeshStandardMaterial({color:'#9fd8b4',roughness:0.7,metalness:0.05,side:THREE.DoubleSide});
     holoDark=dark;
-    holo.traverse(o=>{if(o.userData.holo)o.material=HM[o.userData.holo];});oldSolid.traverse(o=>{if(o.isMesh)o.material=HM.solid;});
+    const MK={sil:'edge',silHidden:'hidden'};holo.traverse(o=>{if(o.userData.holo)o.material=HM[MK[o.userData.holo]||o.userData.holo];});oldSolid.traverse(o=>{if(o.isMesh)o.material=HM.solid;});
   }
   const darkBg=()=>V.host.classList.contains('dark-bg');
   function loadRev(id){
@@ -618,7 +667,8 @@ export function initReview(V){
     p.catch(()=>revCache.delete(id));
     return p;
   }
-  function clearGroup(g){for(const o of [...g.children])o.removeFromParent();}
+  function clearGroup(g){for(const o of [...g.children]){o.removeFromParent();if(o.userData.holo==='sil'||o.userData.holo==='silHidden'){if(o.userData.holo==='sil')o.geometry.dispose();}}
+    if(g===holo){silObjs.length=0;silSig='';}}
   async function showHolo(id){
     if(!id){holo.visible=false;holoKey='';clearGroup(holo);V.dirty();return;}
     const row=revRows.find(r=>r.id===id),whole=$('rev-whole').checked;
@@ -638,11 +688,14 @@ export function initReview(V){
         let eg=edgeCache.get(geometry);if(!eg){eg=new THREE.EdgesGeometry(geometry,35);edgeCache.set(geometry,eg);}
         add(new THREE.Mesh(geometry,HM.face),'face',20);
         add(new THREE.LineSegments(eg,HM.hidden),'hidden',21);add(new THREE.LineSegments(eg,HM.edge),'edge',22);
-        const tris=geometry.index?geometry.index.count/3:geometry.attributes.position.count/3;
-        if(tris<=60000&&!whole||tris<=8000){let wg=wireCache.get(geometry);if(!wg){wg=new THREE.WireframeGeometry(geometry);wireCache.set(geometry,wg);}add(new THREE.LineSegments(wg,HM.wire),'wire',21);}
+        const sd=silData(geometry);
+        if(sd){const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(sd.A.length),3).setUsage(THREE.DynamicDrawUsage));
+          sg.setDrawRange(0,0);sg.boundingSphere=geometry.boundingSphere||(geometry.computeBoundingSphere(),geometry.boundingSphere);
+          for(const [mat,kind,order] of [[HM.hidden,'silHidden',21],[HM.edge,'sil',22]]){const o=new THREE.LineSegments(sg,mat);o.frustumCulled=false;o.userData.sil=sd;add(o,kind,order);}
+          silObjs.push(holo.children[holo.children.length-1]);}
       }
     }
-    holoKey=key;holo.visible=!flick;renderBaselines();V.dirty();
+    holoKey=key;holo.visible=!flick;silSig='';renderBaselines();V.dirty();
   }
   // flick: while held, the old revision solid replaces the current model; release brings the current model back
   async function setFlick(on){
@@ -897,7 +950,9 @@ export function initReview(V){
       editor:editorState(),ghost:ghost.children.length,ghostVisible:ghost.visible,
       revisions:{selected:revSel,preselected:revPre,peek:revPeek,rows:(server?.baselines||[]).map(b=>({id:b.id,kind:b.kind,differ:revRows.find(r=>r.id===b.id)?.differ??null}))},
       holo:{visible:holo.visible,parts:new Set(holo.children.map(o=>o.userData.holoOf)).size,edges:holo.children.filter(o=>o.userData.holo==='edge').length,
-        wire:holo.children.filter(o=>o.userData.holo==='wire').length,dark:holoDark,color:HM.edge?'#'+HM.edge.color.getHexString():null,
+        wire:holo.children.filter(o=>o.userData.holo==='wire').length,kinds:[...new Set(holo.children.map(o=>o.userData.holo))].sort(),
+        edgeSegs:holo.children.filter(o=>o.userData.holo==='edge').reduce((n,o)=>n+o.geometry.attributes.position.count/2,0),
+        faceTris:holo.children.filter(o=>o.userData.holo==='face').reduce((n,o)=>n+(o.geometry.index?o.geometry.index.count:o.geometry.attributes.position.count)/3,0),sil:silObjs.length,silSegs:silObjs.reduce((n,o)=>n+(o.userData.silCount||0),0),silCand:silObjs.reduce((n,o)=>n+o.userData.sil.A.length/6,0),dark:holoDark,color:HM.edge?'#'+HM.edge.color.getHexString():null,
         blending:HM.edge?.blending===THREE.AdditiveBlending?'additive':'normal',flick,oldSolid:oldSolid.visible?oldSolid.children.length:0,modelVisible:V.modelRoot?.visible??true},markers:[...markers.values()].filter(o=>o.visible).length,lastPacket,
       build:server?.build,project:server?.project,baselines:(server?.baselines||[]).map(b=>b.id)})};
 }

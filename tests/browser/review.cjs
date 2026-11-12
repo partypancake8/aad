@@ -430,6 +430,16 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  let H=await hs();
  assert.equal(rv.revisions.selected,bl,'the clicked row is selected');assert.equal(await row.evaluate(e=>e.classList.contains('sel')),true,'and highlighted');
  assert.equal(H.parts,differing.length,`the hologram draws the ${differing.length} differing part(s) by default`);
+ // polish 5: feature edges and curved-surface silhouettes only, no tessellation wireframe (no triangle diagonals)
+ assert.equal(H.wire,0,'no wireframe in the hologram');
+ assert.deepEqual(H.kinds.filter(k=>!['edge','face','hidden','sil','silHidden'].includes(k)),[],'only faces, feature edges and silhouettes: '+H.kinds);
+ assert(H.sil>0&&H.silSegs>0&&H.silSegs<H.silCand,`the curved boss draws a view-dependent silhouette (${H.silSegs} of ${H.silCand} smooth edges)`);
+ const holoSegs=H.edgeSegs,flatTris=H.faceTris;
+ assert(holoSegs<flatTris*1.5,`feature edges (${holoSegs}) are far fewer than a wireframe's ${flatTris*3} triangle sides`);
+ {
+  await page.evaluate(()=>{viewer.controls.rotate(1.2,0.5,false);});await page.waitForTimeout(500);
+  const H2=await hs();assert(H2.silSegs>0,'the silhouette follows the camera');
+  await page.evaluate(()=>{viewer.controls.rotate(-1.2,-0.5,false);});await page.waitForTimeout(400);}
  assert(H.modelVisible&&await page.evaluate(()=>viewer.meshes().every(m=>!m.material.transparent&&m.material.opacity===1)),'the current model stays solid');
  assert.equal(H.dark,false);assert.equal(H.blending,'normal','on the light background the hologram uses normal blending');
  const g=c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16));let [hr,hg,hb]=g(H.color);
