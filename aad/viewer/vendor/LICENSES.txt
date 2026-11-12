@@ -1,0 +1,36 @@
+Vendored page libraries of the aad viewer. Served by server.py under /vendor/; the page makes no network calls.
+Every package came from the npm registry tarball (npm pack <name>@<version>) on 2026-11-11. All are MIT; each folder keeps the package's own LICENSE file.
+No code from GPL or AGPL projects is included.
+
+three 0.187.0  licence MIT  https://github.com/mrdoob/three.js
+  files: build/three.module.js, build/three.core.js and the addons TransformControls, GLTFLoader, STLLoader, PLYLoader, BufferGeometryUtils, SkeletonUtils, CSS2DRenderer; unmodified
+  sha256 8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc  three/LICENSE
+  sha256 613e370f76638fdef83926642bf256dc9615684922de1ce1f63a8583e5d78578  three/build/three.core.js
+  sha256 104f56145899722094556490d787aae0617cc2fc3382f31df02d724ea1aee341  three/build/three.module.js
+  sha256 151befe25bb0d68626f9a6b033625b7b0cf6848e39ba71623b7bed8e3df565d6  three/examples/jsm/controls/TransformControls.js
+  sha256 532ac726e120039acbcd6cf54328c57acbf7b438176afaa6951257126d11bff1  three/examples/jsm/loaders/GLTFLoader.js
+  sha256 751ff866f793ba1fc9181425748d88b7f9234c6e9983386fdaf2e664221340f2  three/examples/jsm/loaders/PLYLoader.js
+  sha256 a07441b8cd812faf8049741fe5e95373b19547e4038694753dfec26fe230a7eb  three/examples/jsm/loaders/STLLoader.js
+  sha256 256abfc6ae1aa20eb83c10d7a0e26534527df65872e4d52da6354bee78288c34  three/examples/jsm/renderers/CSS2DRenderer.js
+  sha256 7bda2a8ba836b2bcf67cb938d4b9e1bb5d1b1bc616817103ed858c0b58296ce7  three/examples/jsm/utils/BufferGeometryUtils.js
+  sha256 b1632a703206c3d830de9fcbe515696770d04b71a15ee6b50afa6d2c3298c86f  three/examples/jsm/utils/SkeletonUtils.js
+
+camera-controls 3.1.2  licence MIT  https://github.com/yomotsu/camera-controls
+  files: dist/camera-controls.module.js; unmodified
+  sha256 d175c34ca3b4fb17d0568627ef8fd9363ae6f63f9ffdc97d4da71f0d7f3473ee  camera-controls/LICENSE
+  sha256 763d48168876ebd5b4ca75f10e9b25c6a4187d8dcf4a1c002fa44029e8169f89  camera-controls/camera-controls.module.js
+
+three-viewport-gizmo 2.2.0  licence MIT  https://github.com/Fennec-hub/three-viewport-gizmo
+  files: dist/three-viewport-gizmo.js; PATCHED: THREE.Clock (deprecated in three r187, warns on construction) replaced by a 3-line local stand-in with the same start/getDelta behaviour; marked 'local patch' in the file
+  sha256 a6987d9b52752616d7ad34a515cf4413f86c3338293d54973cce1691482478b5  three-viewport-gizmo/LICENSE
+  sha256 b537b5ab44f0e1566b7f9498124ed9baf3e9f5ffddec44a10684ce5b9363c887  three-viewport-gizmo/three-viewport-gizmo.js (patched file)
+
+three-mesh-bvh 0.9.18  licence MIT  https://github.com/gkjohnson/three-mesh-bvh
+  files: build/index.module.js saved as three-mesh-bvh.module.js; unmodified
+  sha256 b106ef6198a9862ed2b5b873e944ecf3583c631a84a7462d400ecc1910ce7fee  three-mesh-bvh/LICENSE
+  sha256 bdfb3f6f69fd1a33a6c02e4ea3e24977c402335d9aba86d1b8f2853fafa7df1f  three-mesh-bvh/three-mesh-bvh.module.js
+
+@tabler/icons 3.35.0  licence MIT  https://github.com/tabler/tabler-icons
+  files: a subset of icons/outline/*.svg; unmodified
+  sha256 5a3b65e1ad6a081759fde376fe14e2cd88552a9ebea89a8168f34eab1e96109f  tabler-icons/LICENSE
+  icons: alert-octagon, alert-triangle, arrow-back-up, arrow-forward-up, arrows-diagonal-2, axis-x, box, camera, check, chevron-down, chevron-left, chevron-right, circle-check, circle-x, clipboard-copy, corner-down-right, crosshair, cube, cube-send, eye, eye-off, focus-2, focus-centered, ghost-2, git-compare, grid-dots, home, layers-subtract, list-tree, lock, lock-open, map-pin, map-pin-off, marquee-2, note, perspective, player-play, pointer, refresh, route, ruler-2, ruler-measure, send, settings, tags, trash, x
