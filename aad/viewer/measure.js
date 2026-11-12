@@ -13,6 +13,7 @@
 // Mesh level only: a curved edge is the polyline of its tessellation, so distances to it are within the mesh's chord
 // tolerance. Labels sit beside their dimension line (offset along its screen normal) and step apart when two
 // labels or a label and an end dot would overlap.
+import {weldIds,csr,csrMap} from './prep.js';
 export function initMeasure(V){
   const {THREE,CSS2DObject}=V;
   const VERT_PX=10,PAR_COS=Math.cos(0.5*Math.PI/180),FLAT_DEG=0.5,CREASE_DEG=35;
@@ -33,14 +34,18 @@ export function initMeasure(V){
     return {straight:true,dir,length:L};
   }
   function chainLength(pts){let L=0;for(let i=1;i<pts.length;i++)L+=D(pts[i],pts[i-1]);return L;}
-  // welded vertex -> triangles of a geometry (positions quantized to 0.1 micrometre), built once per geometry
+  // welded vertex -> triangles of a geometry (positions quantized to 0.1 micrometre), built once per geometry: the weld
+  // from the background preparation of a large model when it has arrived, then compact lists (typed arrays, no
+  // per-vertex strings or arrays, so the first hover over a part with a million triangles stays a few milliseconds)
+  const adjCache=new WeakMap();
   function adjacency(geo){
-    if(geo.userData.measAdj)return geo.userData.measAdj;
-    const pos=geo.attributes.position,idx=geo.index,nt=idx?idx.count/3:pos.count/3,q=1e4,ids=new Map(),vw=new Int32Array(pos.count),byV=new Map();
-    for(let i=0;i<pos.count;i++){const k=Math.round(pos.getX(i)*q)+','+Math.round(pos.getY(i)*q)+','+Math.round(pos.getZ(i)*q);let id=ids.get(k);if(id===undefined){id=ids.size;ids.set(k,id);}vw[i]=id;}
-    const tv=t=>idx?[idx.getX(3*t),idx.getX(3*t+1),idx.getX(3*t+2)]:[3*t,3*t+1,3*t+2];
-    for(let t=0;t<nt;t++)for(const v of tv(t)){const w=vw[v];let l=byV.get(w);if(!l)byV.set(w,l=[]);l.push(t);}
-    return geo.userData.measAdj={vw,byV,tv,pos};
+    const had=adjCache.get(geo);if(had&&had.index===geo.index)return had;
+    const pos=geo.attributes.position,idx=geo.index,ia=idx?idx.array:null,nt=idx?idx.count/3:pos.count/3;
+    const P=V.prepOf?V.prepOf(geo):null,vw=P&&P.weld&&P.weld.length===pos.count?P.weld:weldIds(V.posArray(pos),pos.count).vw;
+    let nIds=0;for(let i=0;i<vw.length;i++)if(vw[i]>=nIds)nIds=vw[i]+1;
+    const byV=csrMap(csr(nIds,nt,3,ia?(t,j)=>vw[ia[3*t+j]]:(t,j)=>vw[3*t+j]));
+    const tv=t=>ia?[ia[3*t],ia[3*t+1],ia[3*t+2]]:[3*t,3*t+1,3*t+2];
+    const A={vw,byV,tv,pos,index:geo.index};adjCache.set(geo,A);return A;
   }
   const _ta=new THREE.Vector3(),_tb=new THREE.Vector3(),_tc=new THREE.Vector3();
   function triNormal(A,t,out){const [i,j,k]=A.tv(t);_ta.fromBufferAttribute(A.pos,i);_tb.fromBufferAttribute(A.pos,j);_tc.fromBufferAttribute(A.pos,k);
@@ -164,6 +169,7 @@ export function initMeasure(V){
   }
   V.canvas.addEventListener('pointermove',e=>{pointer.x=e.clientX;pointer.y=e.clientY;lastEv=e;if(raf)return;
     raf=requestAnimationFrame(()=>{raf=0;const ev=lastEv;if(!active()||(ev.buttons&&ev.buttons!==0)){showHoverDot(null);return;}
+      if(V.moving)return;                             // no picking while the camera moves; the next move picks
       const h=V.pickHit(ev),E=pick(ev,h,V.pickEdge(ev,h));showHoverDot(E&&E.type==='vertex'?E.world:null);
       hoverEntity=E;});});
   V.canvas.addEventListener('pointerleave',()=>{pointer.x=pointer.y=null;showHoverDot(null);hoverEntity=null;});

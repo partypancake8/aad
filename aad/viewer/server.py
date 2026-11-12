@@ -49,6 +49,7 @@ PAGE_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; char
 PAGE_FILES = {"index.html": PAGE_TYPES[".html"], "view.js": PAGE_TYPES[".js"], "review.js": PAGE_TYPES[".js"],
               "repin.js": PAGE_TYPES[".js"], "pin_groups.js": PAGE_TYPES[".js"],
               "measure.js": PAGE_TYPES[".js"], "weight.js": PAGE_TYPES[".js"],
+              "prep.js": PAGE_TYPES[".js"], "prep_worker.js": PAGE_TYPES[".js"],
               "style.css": PAGE_TYPES[".css"],
               "favicon.svg": PAGE_TYPES[".svg"], "favicon-dev.svg": PAGE_TYPES[".svg"],
               "favicon-prod.svg": PAGE_TYPES[".svg"], "favicon-32.png": PAGE_TYPES[".png"],

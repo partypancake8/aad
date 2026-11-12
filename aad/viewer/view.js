@@ -8,7 +8,8 @@
 import * as THREE from 'three';
 import CameraControls from 'camera-controls';
 import {ViewportGizmo} from 'three-viewport-gizmo';
-import {computeBoundsTree,disposeBoundsTree,acceleratedRaycast} from 'three-mesh-bvh';
+import {computeBoundsTree,disposeBoundsTree,acceleratedRaycast,MeshBVH} from 'three-mesh-bvh';
+import {solidOf as solidCalc,weldIds,csr,csrMap,edgeTopology,segGrid,gridQuery} from './prep.js';
 import {CSS2DRenderer,CSS2DObject} from 'three/addons/renderers/CSS2DRenderer.js';
 import {initReview} from './review.js';
 import {initWeight} from './weight.js';
@@ -65,10 +66,11 @@ THREE.Mesh.prototype.raycast=acceleratedRaycast;
 const host=$('view'),canvas=$('c');
 // WebGL when the browser has it; otherwise (headless Chrome with --disable-gpu) a software z-buffer preview on
 // a 2D canvas that draws the same scene state (camera, visibility, explode, clip, highlight).
-function webglOK(){try{const c=document.createElement('canvas');return !!(c.getContext('webgl2')||c.getContext('webgl'));}catch(e){return false;}}
+// (no separate probe context: creating and dropping a throwaway WebGL context cost about 250 ms on every load)
 let renderer=null;
-if(webglOK()){try{renderer=new THREE.WebGLRenderer({canvas,antialias:true});}catch(e){renderer=null;}}
-if(renderer){renderer.setPixelRatio(devicePixelRatio);renderer.localClippingEnabled=true;renderer.autoClear=false;}
+try{renderer=new THREE.WebGLRenderer({canvas,antialias:true});}catch(e){renderer=null;}
+// a device pixel ratio above 2 multiplies fill cost with no visible gain on a CAD model
+if(renderer){renderer.setPixelRatio(Math.min(2,devicePixelRatio||1));renderer.localClippingEnabled=true;renderer.autoClear=false;}
 const SOFT=!renderer;
 const BG='#e5e7eb';                                   // light viewport (CAD convention) inside the dark page chrome
 let bgDefault=BG;                                     // the light grey preset (a shaded-edges project lightens it)
@@ -98,7 +100,7 @@ Object.defineProperty(controls,'enableDamping',{get(){return controls.smoothTime
 const OPT_KEY='aad-viewer-options';
 const OPTS=(()=>{let o={};try{o=JSON.parse(localStorage.getItem(OPT_KEY)||'{}')||{};}catch(e){o={};}
   return {nav:o.nav==='classic'?'classic':'fusion',bg:typeof o.bg==='string'?o.bg:null,edges:typeof o.edges==='boolean'?o.edges:null,
-    orbit:o.orbit==='constrained'?'constrained':'free',pivot:['selection','cursor'].includes(o.pivot)?o.pivot:'view'};})();
+    orbit:o.orbit==='constrained'?'constrained':'free',large:o.large===false?false:true,pivot:['selection','cursor'].includes(o.pivot)?o.pivot:'view'};})();
 function saveOpts(){try{localStorage.setItem(OPT_KEY,JSON.stringify(OPTS));}catch(e){}}
 const NAV_HINT={fusion:'Navigation Fusion: middle drag pans, Shift+middle orbits, wheel zooms, double middle-click fits; trackpad: scroll pans, Shift+scroll orbits, pinch zooms',
   classic:'Navigation Classic: left drag orbits, right or middle drag pans, wheel zooms'};
@@ -193,22 +195,19 @@ const labels=new CSS2DRenderer();labels.domElement.id='labels';host.append(label
 // true solid centroid of each closed mesh (signed tetrahedra from the origin, cached per geometry), weighted by
 // its volume; an open or flat mesh counts as its bounding box (centre, box volume). It is computed when an orbit
 // starts, so hiding, isolating, solo, a version switch and explode all move it; section planes do not. ----
+// For a large model the solid numbers come from the background preparation (prep_worker.js); until a part's arrive
+// it counts as its bounding box, so starting an orbit never waits on a full pass over millions of triangles.
 const solidCache=new WeakMap();
+const asSolid=r=>({closed:r.closed,volume:r.volume,centroid:r.centroid?new THREE.Vector3(...r.centroid):null});
 function solidOf(g){
   let s=solidCache.get(g);if(s)return s;
-  const p=g.attributes.position,idx=g.index?g.index.array:null,n=idx?idx.length/3:p.count/3;
-  const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),x=new THREE.Vector3(),q=1e4,weld=new Map(),edges=new Map();
-  const vid=i=>{const k=Math.round(p.getX(i)*q)+','+Math.round(p.getY(i)*q)+','+Math.round(p.getZ(i)*q);let v=weld.get(k);if(v===undefined){v=weld.size;weld.set(k,v);}return v;};
-  let V=0;const C=new THREE.Vector3();
-  for(let t=0;t<n;t++){
-    const i0=idx?idx[3*t]:3*t,i1=idx?idx[3*t+1]:3*t+1,i2=idx?idx[3*t+2]:3*t+2;
-    a.fromBufferAttribute(p,i0);b.fromBufferAttribute(p,i1);c.fromBufferAttribute(p,i2);
-    const v=a.dot(x.crossVectors(b,c))/6;V+=v;C.addScaledVector(x.copy(a).add(b).add(c),v/4);
-    const w=[vid(i0),vid(i1),vid(i2)];
-    for(let e=0;e<3;e++){const u=w[e],z=w[(e+1)%3];if(u===z)continue;const k=u<z?u*2097152+z:z*2097152+u;edges.set(k,(edges.get(k)||0)+1);}
-  }
-  let closed=n>0&&Math.abs(V)>1e-9;for(const m of edges.values())if(m!==2){closed=false;break;}
-  s={closed,volume:Math.abs(V),centroid:closed?C.divideScalar(V):null};solidCache.set(g,s);return s;
+  if(prepPending.has(g))return {closed:false,volume:0,centroid:null};
+  s=asSolid(solidCalc(posArray(g.attributes.position),g.index?g.index.array:null));solidCache.set(g,s);return s;
+}
+// a compact xyz Float32Array of a position attribute (a copy only when it is interleaved, offset or not float)
+function posArray(p){
+  if(!p.isInterleavedBufferAttribute&&p.itemSize===3&&p.array instanceof Float32Array&&!p.normalized&&p.array.length===p.count*3)return p.array;
+  const out=new Float32Array(p.count*3);for(let i=0;i<p.count;i++){out[3*i]=p.getX(i);out[3*i+1]=p.getY(i);out[3*i+2]=p.getZ(i);}return out;
 }
 function centroidOf(meshes){
   scene.updateMatrixWorld();let W=0;const sum=new THREE.Vector3(),t=new THREE.Vector3(),bb=new THREE.Box3(),sz=new THREE.Vector3();
@@ -747,6 +746,9 @@ function applyBg(){
 document.querySelectorAll('#bg-presets button').forEach(b=>b.onclick=()=>{OPTS.bg=BG_PRESETS[b.dataset.bg];saveOpts();applyBg();});
 $('bg-custom').oninput=e=>{OPTS.bg=e.target.value;saveOpts();applyBg();};
 $('opt-edges').onchange=e=>setEdges(e.target.checked,true);
+$('opt-large').checked=OPTS.large!==false;
+$('opt-large').onchange=e=>{OPTS.large=e.target.checked;saveOpts();largeNoted='';largeNote();if(R)R.onLargeMode?.();};
+$('large-note-x').onclick=()=>{$('large-note').hidden=true;};
 
 // ---- model, tree, visibility ----
 const gltfLoader=new GLTFLoader(),stlLoader=new STLLoader(),plyLoader=new PLYLoader();
@@ -810,13 +812,142 @@ function styleCadMesh(m){
 // edge pick and edge pins all use these segments
 function addEdges(m,angle=35){
   if(m.children.some(e=>e.userData.cadEdge))return;
+  const geo=edgesGeometry(m,angle);if(!geo)return;              // a part still being prepared gets them on arrival
   const mats=Array.isArray(m.material)?m.material:[m.material];
   const clear=mats.every(x=>x.transparent&&x.opacity<0.5);
-  const edges=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry,angle),new THREE.LineBasicMaterial({
+  const edges=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({
     color:0x263747,transparent:true,opacity:clear?0.25:0.82,depthTest:true,depthWrite:false,clippingPlanes:clipPlanes}));
   edges.name='Visible feature edges';edges.userData.cadEdge=true;edges.visible=showEdges;
   edges.raycast=()=>{};m.add(edges);
 }
+// the crease edges of a part: the prepared segments when the background preparation made them at this angle (the same
+// EdgesGeometry output), null while it is still working on the part, else built here
+function edgesGeometry(m,angle){
+  const P=prepOf.get(m.geometry);
+  if(P&&P.angle===angle){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(P.edges,3));return g;}
+  if(prepPending.has(m.geometry))return null;
+  return new THREE.EdgesGeometry(m.geometry,angle);
+}
+const edgeAngleOf=m=>cadAppearance?.edgeAngles?.[m.userData.leaf?.component]??35;
+
+// ---- part preparation. A model over PREP_SYNC_TRIS triangles is shown as soon as it is parsed; its parts' picking
+// trees, crease edges and solid numbers are then built by a few background workers (prep_worker.js, largest parts
+// first), and each part becomes pickable and gets its edges when its result arrives. A small strip in the viewport
+// counts the parts still being prepared. A smaller model is prepared at once while loading, as before. Without
+// module workers the parts are prepared one per task on this thread. ----
+const PREP_SYNC_TRIS=60000;
+const prepOf=new WeakMap();           // geometry -> {angle, edges, topo, grid, weld}
+const prepPending=new WeakSet();      // geometries whose preparation has not arrived yet
+let prepRun=null,prepPool=null,prepBroken=false,pickGen=0;
+const edgeQ=[];                       // edges-only jobs (the Revisions hologram of a large model): {geometry, angle, resolve}
+const PERF={raycasts:0,pickCalls:0,edgePicks:0,edgePickCalls:0,segTests:0,hovers:0,prepMs:0,prepParts:0,prepMode:null};
+function prepStrip(){
+  const el=$('prep');if(!el)return;const r=prepRun;
+  if(!r||r.done>=r.total){el.hidden=true;return;}
+  el.hidden=false;$('prep-t').textContent=`Preparing parts for picking and edges: ${r.done} of ${r.total} ready`;
+  $('prep-bar').style.width=(100*r.done/Math.max(1,r.total)).toFixed(1)+'%';
+}
+function startPrep(list){
+  if(prepRun)prepRun.cancelled=true;
+  const byGeo=new Map();
+  for(const m of list){const g=m.geometry;if(!prepPending.has(g))continue;let j=byGeo.get(g);if(!j)byGeo.set(g,j={geometry:g,meshes:[],angle:edgeAngleOf(m),tris:triCount(g)});j.meshes.push(m);}
+  const jobs=[...byGeo.values()].sort((a,b)=>b.tris-a.tris);
+  const run=prepRun={jobs,total:jobs.length,done:0,t0:performance.now(),cancelled:false,busy:0};
+  PERF.prepParts=jobs.length;prepStrip();
+  if(!jobs.length)return;
+  ensurePool();
+  PERF.prepMode=prepBroken?'main':'workers';
+  if(prepBroken)prepMain(run);else for(const w of prepPool)prepNext(w);
+}
+function ensurePool(){
+  if(prepBroken||prepPool)return;
+  try{
+    const n=Math.max(1,Math.min(4,(navigator.hardwareConcurrency||4)-1));
+    prepPool=[];for(let i=0;i<n;i++){const w=new Worker(new URL('prep_worker.js',location.href),{type:'module'});w.job=null;prepPool.push(w);
+      w.onmessage=e=>prepResult(w,e.data);w.onerror=e=>{e.preventDefault?.();prepFail(w,e.message||'worker failed');};}
+  }catch(e){prepBroken=true;prepPool=null;}
+}
+// crease edges of any geometry (EdgesGeometry segments) built off this thread; resolves to the position array
+function edgesAsync(geometry,angle=35){
+  return new Promise(resolve=>{
+    edgeQ.push({kind:'edges',geometry,angle,resolve});ensurePool();
+    if(prepBroken)drainEdgesMain();else for(const w of prepPool)prepNext(w);
+  });
+}
+function drainEdgesMain(){
+  const j=edgeQ.shift();if(!j)return;
+  j.resolve(new THREE.EdgesGeometry(j.geometry,j.angle).attributes.position.array);setTimeout(drainEdgesMain,0);
+}
+let prepJobId=0;
+function prepNext(w){
+  if(w.job)return;
+  const run=prepRun,j=(run&&!run.cancelled?run.jobs.shift():null)||edgeQ.shift();
+  if(!j){if(prepPool&&!prepPool.some(x=>x.job)){for(const x of prepPool)x.terminate();prepPool=null;}return;}   // idle: free them
+  const edgesOnly=j.kind==='edges';
+  if(!edgesOnly&&!prepPending.has(j.geometry))return prepNext(w);
+  const g=j.geometry,pos=posArray(g.attributes.position).slice(),index=g.index?g.index.array.slice():null;
+  w.job={...j,id:++prepJobId,run:edgesOnly?null:run};
+  w.postMessage({id:w.job.id,pos,index,angle:j.angle,edgesOnly},[pos.buffer,...(index?[index.buffer]:[])]);
+}
+function prepFail(w,why){
+  console.warn('part preparation worker:',why);
+  const j=w.job;w.job=null;prepBroken=true;
+  const back=x=>{if(x.kind==='edges')edgeQ.unshift(x);else if(!x.run.cancelled)x.run.jobs.unshift(x);};
+  if(prepPool){for(const x of prepPool){if(x.job&&x!==w)back(x.job);x.job=null;x.terminate();}prepPool=null;}
+  if(j)back(j);
+  PERF.prepMode='main';if(prepRun&&!prepRun.cancelled)prepMain(prepRun);drainEdgesMain();
+}
+function prepResult(w,r){
+  const j=w.job;if(!j||r.id!==j.id)return;
+  if(!r.ok){prepFail(w,r.error);return;}
+  w.job=null;
+  if(j.kind==='edges'){j.resolve(r.edges);prepNext(w);return;}
+  if(!j.run.cancelled&&prepPending.has(j.geometry)){
+    const g=j.geometry;
+    g.boundsTree=MeshBVH.deserialize({version:1,roots:r.roots,index:r.index,indirectBuffer:null},g,{setIndex:true});
+    solidCache.set(g,asSolid(r.solid));
+    prepOf.set(g,{angle:j.angle,edges:r.edges,topo:r.topo,grid:r.grid,weld:r.weld});
+    prepArrived(j);
+  }
+  prepNext(w);
+}
+// without workers: one part per task, so the page still draws and answers between parts
+function prepMain(run){
+  const step=()=>{
+    if(run.cancelled)return;const j=run.jobs.shift();if(!j)return;
+    const g=j.geometry;
+    if(prepPending.has(g)){
+      if(!g.boundsTree)g.computeBoundsTree();
+      prepPending.delete(g);
+      const e=new THREE.EdgesGeometry(g,j.angle).attributes.position.array;
+      prepOf.set(g,{angle:j.angle,edges:e,topo:null,grid:null,weld:null});
+      prepArrived(j);
+    }
+    setTimeout(step,0);
+  };
+  setTimeout(step,0);
+}
+function prepArrived(j){
+  const g=j.geometry;prepPending.delete(g);pickGen++;j.run.done++;
+  if(j.run.done>=j.run.total)PERF.prepMs=Math.round(performance.now()-j.run.t0);
+  const want=showEdges||cadAppearance?.style==='shaded-edges';
+  for(const m of j.meshes)if(m.parent&&want)addEdges(m,edgeAngleOf(m));
+  prepStrip();dirty=true;
+}
+const triCount=g=>g.index?g.index.count/3:g.attributes.position.count/3;
+// Large model mode (Options, on by default; applies over LARGE_TRIS triangles): the Revisions hologram draws crease
+// edges built in the background and leaves out the curved-surface silhouettes, whose per-view update walks every
+// smooth edge of the old model. A one-line notice says so once per model and can be dismissed.
+const LARGE_TRIS=2500000;let modelTris=0,largeNoted='';
+const largeMode=()=>OPTS.large!==false&&modelTris>LARGE_TRIS;
+function largeNote(){
+  const el=$('large-note');if(!el)return;const on=largeMode()&&!!R,key=String(modelTris);
+  if(!on){el.hidden=true;return;}
+  if(largeNoted===key)return;largeNoted=key;
+  $('large-note-t').textContent=`Large model, ${(modelTris/1e6).toFixed(1)} M triangles: the Revisions hologram shows crease edges only, no silhouettes. Options turns this off.`;
+  el.hidden=false;
+}
+
 // Edges on by default for CAD looks (shaded-edges views, review workspaces), off for scans; Options can override
 const edgesWanted=()=>OPTS.edges??(cadAppearance?.style==='shaded-edges'||(!!M?.review?.enabled&&!headMode));
 function setEdges(v,persist){
@@ -951,6 +1082,7 @@ function renderTreeState(){
   for(const m of modules){const r=nodes.get(m.key);if(r&&r.soloEl)r.soloEl.classList.toggle('on',m.key===soloKey);}
 }
 function applyVisibility(){
+  pickGen++;
   for(const [k,r] of nodes)r.obj.visible=r.leaf?leafShown(k):true;
   if(showSides)buildSides();
   renderTreeState();
@@ -971,6 +1103,7 @@ function resetExplode(){
   for(const m of modules)m.group.position.set(0,0,0);
 }
 function applyExplode(){
+  pickGen++;
   const e=+$('explode').value;$('explodev').textContent=e.toFixed(2);
   resetExplode();
   if(headMode){
@@ -1008,7 +1141,7 @@ function setRanges(){
   applyClip();
 }
 function applyClip(){
-  clipPlanes.length=0;
+  pickGen++;clipPlanes.length=0;
   for(const [id,p,n] of [['clipZ',planeZ,new THREE.Vector3(0,0,-1)],['clipX',planeX,new THREE.Vector3(-1,0,0)]]){
     const v=+$(id).value,flip=$(id+'flip').checked;$(id+'v').textContent=v+' mm';
     if(flip)p.set(n.clone().negate(),-v);else p.set(n,v);
@@ -1022,10 +1155,29 @@ for(const id of CLIP_IDS){$(id).addEventListener('input',applyClip);$(id).addEve
 
 // ---- picking: hover tooltip, click select, double-click focus ----
 const ray=new THREE.Raycaster(),ndc=new THREE.Vector2();
-// the nearest visible hit under a pointer event (section planes respected; BVH-accelerated), or null
+// The hover tip, Pin and Measure all ask for the hit under the same pointer in the same frame: one raycast answers
+// them all. The memo holds while the frame, the pointer, the camera and the pickable scene (visibility, section,
+// explode, parts prepared) are unchanged.
+let frameNo=0,pickMemo=null,edgeMemo=null;
+function pickKey(ev){
+  cam.updateMatrixWorld();
+  return {x:ev.clientX,y:ev.clientY,f:frameNo,g:pickGen,c:cam,cv:camMode,m:cam.matrixWorld.elements.slice(),p0:cam.projectionMatrix.elements[0],p5:cam.projectionMatrix.elements[5]};
+}
+function sameKey(a,b){
+  if(!a||a.x!==b.x||a.y!==b.y||a.f!==b.f||a.g!==b.g||a.c!==b.c||a.cv!==b.cv||a.p0!==b.p0||a.p5!==b.p5)return false;
+  for(let i=0;i<16;i++)if(a.m[i]!==b.m[i])return false;return true;
+}
+// the nearest visible hit under a pointer event (section planes respected; BVH-accelerated), or null. A part of a
+// large model is pickable once its preparation has arrived (until then it would be a brute-force raycast).
 function pickHit(ev){
+  PERF.pickCalls++;
+  const key=pickKey(ev);if(pickMemo&&sameKey(pickMemo.key,key))return pickMemo.h;
+  const h=pickHitNow(ev);pickMemo={key,h};return h;
+}
+function pickHitNow(ev){
+  PERF.raycasts++;
   const r=canvas.getBoundingClientRect();
-  let list=meshList.filter(effVisible);
+  let list=meshList.filter(m=>effVisible(m)&&!prepPending.has(m.geometry));
   if(fishOn()){
     const d=fishDir(ev);if(!d)return null;ray.set(new THREE.Vector3(...camMode.eye),d);
     const obs=new Set();for(const o of observerObjs())o.traverse(m=>obs.add(m));list=list.filter(m=>!obs.has(m));
@@ -1183,8 +1335,11 @@ function showPick(i){
 canvas.addEventListener('dblclick',e=>{const m=pick(e);if(m){select(m.userData.key);if(!fishOn())focusKey(m.userData.key);commit();}});
 canvas.addEventListener('pointermove',e=>{lastMove=e;if(down&&Math.hypot(e.clientX-down.x,e.clientY-down.y)>4)down.moved=true;});
 canvas.addEventListener('pointerleave',()=>{lastMove=null;$('tip').style.display='none';});
+// at most one hover pick per 70 ms, none while the camera moves or a button is held (the last pointer position is
+// kept, so the tip catches up once the view settles)
 function hover(now){
-  if(!componentMenu.hidden||!lastMove||now-hoverT<70||(down&&lastMove.buttons))return;hoverT=now;
+  if(!componentMenu.hidden||!lastMove||now-hoverT<70||(down&&lastMove.buttons)||camMoving)return;hoverT=now;
+  PERF.hovers++;
   const e=lastMove;lastMove=null;const h=pickHit(e),tip=$('tip');
   // Pin and Measure modes: a feature edge within a few pixels wins over the face behind it and is drawn whole
   const ed=R&&R.wantsEdges()?pickEdge(e,h):null;
@@ -1207,15 +1362,18 @@ function edgeData(m,force=false){
   let e=m.children.find(c=>c.userData.cadEdge);
   if(!e&&force){                            // Edges display off: the same segments, built off-scene (edge pin re-match)
     e=offEdges.get(m);                      // a WeakMap, not userData: mesh.clone() copies userData as JSON
-    if(!e){e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry,cadAppearance?.edgeAngles?.[m.userData.leaf?.component]??35));e.visible=false;offEdges.set(m,e);}
+    if(!e){const geo=edgesGeometry(m,edgeAngleOf(m))||new THREE.EdgesGeometry(m.geometry,edgeAngleOf(m));
+      e=new THREE.LineSegments(geo);e.visible=false;offEdges.set(m,e);}
   }
   if(!e)return null;
   const had=edgeDataOf.get(e);if(had)return had;
-  const pos=e.geometry.attributes.position,a=pos.array,nv=pos.count,vid=new Int32Array(nv),ids=new Map(),q=1e4;
-  for(let i=0;i<nv;i++){const k=Math.round(a[3*i]*q)+','+Math.round(a[3*i+1]*q)+','+Math.round(a[3*i+2]*q);let id=ids.get(k);if(id===undefined){id=ids.size;ids.set(k,id);}vid[i]=id;}
-  const n=nv/2,adj=new Map();
-  for(let s=0;s<n;s++)for(const v of [vid[2*s],vid[2*s+1]]){let l=adj.get(v);if(!l)adj.set(v,l=[]);l.push(s);}
-  const d={a,n,vid,adj,obj:e,chainOf:new Int32Array(n).fill(-1),chains:[]};edgeDataOf.set(e,d);return d;
+  // welded vertex ids (0.1 micrometre grid, first-seen order), vertex -> segment lists and the segment grid: from the
+  // background preparation when it made these segments, else built here
+  const a=e.geometry.attributes.position.array,P=prepOf.get(m.geometry);
+  const prepared=P&&P.edges===a&&P.topo;
+  const topo=prepared?P.topo:edgeTopology(a),grid=prepared?P.grid:segGrid(a);
+  const n=a.length/6;
+  const d={a,n,vid:topo.vid,adj:csrMap({start:topo.adjStart,items:topo.adjItems}),grid,obj:e,chainOf:new Int32Array(n).fill(-1),chains:[]};edgeDataOf.set(e,d);return d;
 }
 function edgeChain(d,s0){
   if(d.chainOf[s0]>=0)return d.chains[d.chainOf[s0]];
@@ -1257,8 +1415,32 @@ function edgeRecord(pts){
   return {points:simp.map(r3),length_mm:+L.toFixed(4),start:r3(pts[0]),end:r3(pts[pts.length-1]),midpoint:r3(mid),direction:r3(dir)};
 }
 const _ea=new THREE.Vector3(),_eb=new THREE.Vector3(),_ec=new THREE.Vector3(),_mvp=new THREE.Matrix4(),_vp=new THREE.Matrix4(),_es=new THREE.Sphere();
+const _inv=new THREE.Matrix4(),_ro=new THREE.Vector3(),_rd=new THREE.Vector3(),_rf=new THREE.Vector3(),_rc=new THREE.Raycaster(),_rn=new THREE.Vector2(),gridScratch={gen:0};
+let edgeLinear=false;                       // scripted checks compare the grid against the full scan
+// The segments of mesh m that can be within EDGE_PX of the pointer: the segment grid's answer for the pointer ray
+// with the pixel tolerance turned into part-local millimetres along it (grows with depth in perspective), or null
+// (test them all) without a grid. The screen-space test below stays the judge, so the pick is the same as a full scan.
+function edgeCandidates(m,d,px,py,W,H){
+  if(!d.grid||edgeLinear)return null;
+  _rn.set(px/W*2-1,-(py/H)*2+1);_rc.setFromCamera(_rn,cam);
+  _inv.copy(m.matrixWorld).invert();
+  _ro.copy(_rc.ray.origin).applyMatrix4(_inv);_rd.copy(_rc.ray.origin).add(_rc.ray.direction).applyMatrix4(_inv).sub(_ro);
+  const L=_rd.length();if(!(L>0))return null;_rd.divideScalar(L);
+  const e=m.matrixWorld.elements,sMin=Math.min(Math.hypot(e[0],e[1],e[2]),Math.hypot(e[4],e[5],e[6]),Math.hypot(e[8],e[9],e[10]));
+  if(!(sMin>0))return null;
+  const k=1.05*EDGE_PX/sMin;let k0,k1;
+  if(cam.isOrthographicCamera){k0=k*(cam.top-cam.bottom)/(H*cam.zoom);k1=0;}
+  else{const fwd=cam.getWorldDirection(_rf),c=k*2*Math.tan(cam.fov*D2R/2)/H;k0=0;k1=c*Math.max(0,_rc.ray.direction.dot(fwd))/L;}
+  return gridQuery(d.grid,[_ro.x,_ro.y,_ro.z],[_rd.x,_rd.y,_rd.z],k0,k1,gridScratch);
+}
 function pickEdge(ev,hit){
   if(!showEdges||SOFT||fishOn())return null;
+  PERF.edgePickCalls++;
+  const key=pickKey(ev);if(edgeMemo&&edgeMemo.hit===hit&&sameKey(edgeMemo.key,key))return edgeMemo.r;
+  const r=pickEdgeNow(ev,hit);edgeMemo={key,hit,r};return r;
+}
+function pickEdgeNow(ev,hit){
+  PERF.edgePicks++;
   const r=canvas.getBoundingClientRect(),px=ev.clientX-r.left,py=ev.clientY-r.top,W=r.width,H=r.height;
   cam.updateMatrixWorld();_vp.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);
   const fwd=cam.getWorldDirection(new THREE.Vector3()),depth=p=>_ec.copy(p).sub(cam.position).dot(fwd);
@@ -1271,7 +1453,8 @@ function pickEdge(ev,hit){
     _es.copy(m.geometry.boundingSphere).applyMatrix4(m.matrixWorld);_ec.copy(_es.center).applyMatrix4(_vp);
     if(Math.hypot((_ec.x*0.5+0.5)*W-px,(0.5-_ec.y*0.5)*H-py)>_es.radius*pxPerMm(_es.center)+EDGE_PX)continue;
     _mvp.multiplyMatrices(_vp,m.matrixWorld);const a=d.a;
-    for(let s=0;s<d.n;s++){
+    const cand=edgeCandidates(m,d,px,py,W,H),N=cand?cand.length:d.n;PERF.segTests+=N;
+    for(let ci=0;ci<N;ci++){const s=cand?cand[ci]:ci;
       _ea.set(a[6*s],a[6*s+1],a[6*s+2]).applyMatrix4(_mvp);_eb.set(a[6*s+3],a[6*s+4],a[6*s+5]).applyMatrix4(_mvp);
       if(_ea.z<-1||_ea.z>1||_eb.z<-1||_eb.z>1)continue;
       const ax=(_ea.x*0.5+0.5)*W,ay=(0.5-_ea.y*0.5)*H,bx=(_eb.x*0.5+0.5)*W,by=(0.5-_eb.y*0.5)*H,dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;
@@ -1471,7 +1654,7 @@ function setupMask(){
   tc=new TransformControls(cam,canvas);
   tc.addEventListener('dragging-changed',e=>{controls.enabled=!e.value;if(!e.value){showPose();commit();}});
   tc.addEventListener('objectChange',()=>{if(lockOn()&&tc.getMode()==='scale'){const s=mask.scale,d=[s.x-lastScale.x,s.y-lastScale.y,s.z-lastScale.z].map(Math.abs);mask.scale.setScalar([s.x,s.y,s.z][d.indexOf(Math.max(...d))]);}showPose();});
-  tc.addEventListener('change',()=>{dirty=true;});
+  tc.addEventListener('change',()=>{dirty=true;pickGen++;});
   scene.add(tc.getHelper());            // three r169+: TransformControls is a Controls; its gizmo is the helper
   for(const[id,[k,a]]of Object.entries(F)){
     $(id).addEventListener('change',e=>{
@@ -1559,7 +1742,18 @@ async function loadModel(s){
   await fetchTree();
   const old=meshList;const selKey=sel&&sel.key;clearSel();
   meshByNode=next;meshList=list;
-  if(!SOFT)for(const m of list)if(!m.geometry.boundsTree)m.geometry.computeBoundsTree();      // fast picking
+  // picking trees and edges: at once for a small model, in the background for a large one (startPrep below)
+  // A GLB writer may store one index accessor for parts with the same topology (identical fasteners, tread links), and
+  // GLTFLoader then hands those geometries one shared index attribute. Building a picking tree reorders a geometry's
+  // index in place, so a shared one would be reordered again for every other part on it, leaving the earlier trees
+  // pointing at the wrong triangles (missed and wrong picks). Each geometry gets its own index first.
+  const idxOwner=new Map();
+  for(const m of list){const g=m.geometry,ix=g.index;if(!ix)continue;const o=idxOwner.get(ix);if(!o)idxOwner.set(ix,g);else if(o!==g)g.setIndex(ix.clone());}
+  let tris=0;for(const m of list)tris+=triCount(m.geometry);
+  const bg=!SOFT&&tris>PREP_SYNC_TRIS;modelTris=tris;
+  if(!SOFT)for(const m of list)if(!m.geometry.boundsTree){if(bg)prepPending.add(m.geometry);else m.geometry.computeBoundsTree();}
+  if(!bg){PERF.prepMode=SOFT?null:'sync';PERF.prepParts=0;if(prepRun)prepRun.cancelled=true;prepRun=null;prepStrip();}
+  pickGen++;
   for(const m of modules)m.group.position.set(0,0,0);
   assemble();
   for(const m of old)m.traverse(o=>{o.geometry?.boundsTree&&o.geometry.disposeBoundsTree();o.geometry?.dispose();if(o.material)(Array.isArray(o.material)?o.material:[o.material]).forEach(x=>x.dispose());});
@@ -1588,7 +1782,8 @@ async function loadModel(s){
     ready=true;pushHist();
   }
   showStatus(!first);
-  let tris=0;for(const m of list)tris+=m.geometry.index?m.geometry.index.count/3:m.geometry.attributes.position.count/3;
+  if(bg)startPrep(list);
+  largeNote();
   log('info',(first?'ready':'reloaded')+' '+list.length+' meshes, '+Math.round(tris)+' triangles, '+modules.length+' modules, sig '+s.sig.slice(0,200));
 }
 // URL parameters for links and scripted checks: ?view=hub (?view=camera: the UC-261 fisheye lens view)&proj=persp&explode=0.5&clipz=60&clipx=0&hide=fasteners
@@ -1613,12 +1808,16 @@ function ctx(){return {THREE,CSS2DObject,scene,host,canvas,fetch,$,log,nodes,vis
   pickHit,pickInfo,pickEdge,edgeScreen,featureChains,get loadedMtime(){return loadedMtime;},partRef,clipSig:()=>clipPlanes.map(p=>p.normal.toArray().join()+':'+p.constant.toFixed(3)).join('|'),select,leafKeys:k=>nodes.get(k)?.leaves||[],clearSel,focusKey,focusBox,flyToPoint,commit,camAction,snapCam,retint,
   dirty:()=>{dirty=true;},renderNow:()=>{if(!SOFT)renderNow();},soft:SOFT,
   camera:()=>{const c=snapCam();return {projection:c.proj==='o'?'ortho':'persp',position:c.p,target:c.t,up:c.u,zoom:c.z,view:c.v,fov:cam.isPerspectiveCamera?cam.fov:null};},
-  hiddenKeys:()=>[...vis].filter(([,v])=>!v).map(([k])=>k)};}
+  hiddenKeys:()=>[...vis].filter(([,v])=>!v).map(([k])=>k),
+  prepOf:g=>prepOf.get(g),posArray,largeMode,edgesAsync,
+  // link the shader programs an object tree needs without blocking (parallel compile where the driver has it)
+  compileAsync:o=>renderer?renderer.compileAsync(o,cam,scene).catch(()=>{}):Promise.resolve(),get moving(){return camMoving;},perf:PERF};}
 // a small handle for scripted checks (CDP) and the console
 window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clearSel,undo,redo,commit,get cube(){return cube;},
   meshes:()=>meshList,toScreen:p=>{const r=canvas.getBoundingClientRect(),v=new THREE.Vector3(...p).project(cam);return [r.left+(v.x+1)/2*r.width,r.top+(1-v.y)/2*r.height];},
   get review(){return R;},panes:()=>({...paneWidths(),saved:{...pane}}),get weight(){return Wt;},get lastCopied(){return lastCopied;},
-  edgeAt:(x,y)=>{const e={clientX:x,clientY:y};const ed=pickEdge(e,pickHit(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px}:null;},
+  edgeAt:(x,y,o={})=>{const e={clientX:x,clientY:y};edgeLinear=!!o.linear;try{const ed=pickEdgeNow(e,pickHitNow(e));return ed?{key:ed.mesh.userData.key,length:ed.record.length_mm,points:ed.record.points.length,px:ed.px,seg:ed.seg}:null;}finally{edgeLinear=false;}},
+  get perf(){const r=prepRun;return {...PERF,prepDone:r?r.done:0,prepTotal:r?r.total:0,frame:frameNo};},
   edgeChains:k=>{let m=null;nodes.get(k)?.obj.traverse(o=>{if(!m&&o.isMesh)m=o;});return m?featureChains(m).map(c=>c.record):[];},
   get hoverEdge(){return hoverEdge?{key:hoverEdge.mesh.userData.key,length:hoverEdge.record.length_mm}:null;},pickAt:(x,y)=>{const h=pickHit({clientX:x,clientY:y});const i=pickInfo(h);if(i)delete i.mesh;return i;},
   home:()=>camAction(goHome),fitSelection:()=>camAction(fitSelection),setSides:v=>{setSides(v);commit();},
@@ -1634,7 +1833,8 @@ window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clear
     proj:cam===ortho?'ortho':'persp',projDisabled:$('proj').disabled,fisheye:fishOn(),fishRect:FISH.rect,camLabel:$('camnote').hidden?null:$('camnote-t').textContent,orbit:controls.enabled,selected:sel&&sel.key,renders,ctrlTrue,status:$('status').dataset.full||$('status').textContent,brandFit:$('brand').dataset.fit,
     history:hist.length,hp,undo:!$('undo').disabled,redo:!$('redo').disabled,
     mask:mask?{p:mask.position.toArray(),pieces:maskPieces()}:null,sides:showSides,cube:!!cube,cubeBox:cube?(()=>{const r=(cube._domElement||cube.domElement).getBoundingClientRect(),h=host.getBoundingClientRect();return {top:r.top-h.top,right:h.right-r.right,w:r.width,h:r.height};})():null,controls:'camera-controls 3.1.2',
-    three:THREE.REVISION,bvh:meshList.filter(m=>m.geometry.boundsTree).length,review:R?R.state():null})};
+    three:THREE.REVISION,bvh:meshList.filter(m=>m.geometry.boundsTree).length,prepPending:meshList.filter(m=>prepPending.has(m.geometry)).length,
+    pixelRatio:renderer?renderer.getPixelRatio():null,largeMode:largeMode(),modelTris,largeNote:!$('large-note').hidden,review:R?R.state():null})};
 async function poll(){
   if(busy)return;busy=true;clearTimeout(retryTimer);
   try{
@@ -1782,14 +1982,16 @@ function softRender(){
 }
 
 // ---- render loop (renders only when something changed) ----
-let lastDirty=0;
+let lastDirty=0,camMoving=false;
 (function loop(now){
-  requestAnimationFrame(loop);
+  requestAnimationFrame(loop);frameNo++;
   const t0=performance.now(),dt=Math.min(0.5,(t0-lastFrame)/1000);lastFrame=t0;
+  let moving=!!camAnim;
   if(camAnim){camAnim.step(t0);dirty=true;}
-  if(cube&&(cube.animating||cubeDrag))dirty=true;else if(controls.update(dt)){dirty=true;}
+  if(cube&&(cube.animating||cubeDrag)){dirty=true;moving=true;}else if(controls.update(dt)){dirty=true;moving=true;}
   if(cube&&!cube.animating&&!cubeDrag&&dirty){camTarget(cube.target);cube.cameraUpdate();}
-  if(camMoved()){dirty=true;ctrlTrue++;}
+  if(camMoved()){dirty=true;ctrlTrue++;moving=true;}
+  camMoving=moving;
   hover(now||0);
   if(!dirty)return;
   if(SOFT){if(!lastDirty){lastDirty=now;return;}if(now-lastDirty<60)return;}   // the preview takes ~1 s: draw once settled

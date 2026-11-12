@@ -811,7 +811,7 @@ export function initReview(V){
   // light background it is a darker green with normal blending (additive green washes out on white).
   const holo=new THREE.Group();holo.name='Revision hologram';holo.visible=false;V.scene.add(holo);
   const oldSolid=new THREE.Group();oldSolid.name='Old revision (flick)';oldSolid.visible=false;V.scene.add(oldSolid);
-  let holoKey='',holoDark=null,holoLoading=null;
+  let holoKey='',holoDark=null,holoLoading=null,holoCompiled=null;
   const revCache=new Map();                                    // revision id -> Promise of Map(part name -> [{geometry, matrix}])
   const edgeCache=new WeakMap(),silCache=new WeakMap();
   // silhouette candidates of a geometry: the smooth edges (two faces meeting under the 35 degree crease angle, not
@@ -873,6 +873,9 @@ export function initReview(V){
     HM.face=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:dark?0.04:0.05,blending:add,depthWrite:false,depthTest:false,side:THREE.DoubleSide});
     HM.solid=new THREE.MeshStandardMaterial({color:'#9fd8b4',roughness:0.7,metalness:0.05,side:THREE.DoubleSide});
     holoDark=dark;
+    // compile the hologram's programs off the critical path: showing a large hologram then only uploads geometry
+    if(V.compileAsync){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(9),3));
+      const d=new THREE.Group();d.add(new THREE.Mesh(g,HM.face),new THREE.LineSegments(g,HM.hidden),new THREE.LineSegments(g,HM.edge));holoCompiled=V.compileAsync(d).finally(()=>g.dispose());}
     const MK={sil:'edge',silHidden:'hidden'};holo.traverse(o=>{if(o.userData.holo)o.material=HM[MK[o.userData.holo]||o.userData.holo];});oldSolid.traverse(o=>{if(o.isMesh)o.material=HM.solid;});
   }
   const darkBg=()=>V.host.classList.contains('dark-bg');
@@ -914,6 +917,20 @@ export function initReview(V){
     if(holoDark===null||holoDark!==darkBg())holoMats(darkBg());
     clearGroup(holo);
     const want=whole?null:new Set(row?.parts||(diff&&diff.a.id===id?diff.parts.filter(r=>['changed','moved','removed'].includes(r.status)).map(r=>r.name):[]));
+    // large model mode (view.js): crease edges built in the background, no silhouettes
+    const large=!!V.largeMode?.();
+    if(large){
+      const need=[];for(const [name,list] of parts){if(want&&!want.has(name))continue;for(const {geometry} of list)if(!edgeCache.has(geometry)&&!need.includes(geometry))need.push(geometry);}
+      if(need.length){
+        holoLoading=id;renderBaselines();
+        const arrs=await Promise.all(need.map(g=>V.edgesAsync(g,35)));
+        need.forEach((g,i)=>{const e=new THREE.BufferGeometry();e.setAttribute('position',new THREE.BufferAttribute(arrs[i],3));edgeCache.set(g,e);});
+        if(holoCompiled)await holoCompiled;
+        holoLoading=null;
+        if((revPeek||revSel)!==id){renderBaselines();return;}
+        clearGroup(holo);
+      }
+    }
     for(const [name,list] of parts){
       if(want&&!want.has(name))continue;
       for(const {geometry,matrix} of list){
@@ -921,7 +938,7 @@ export function initReview(V){
         let eg=edgeCache.get(geometry);if(!eg){eg=new THREE.EdgesGeometry(geometry,35);edgeCache.set(geometry,eg);}
         add(new THREE.Mesh(geometry,HM.face),'face',20);
         add(new THREE.LineSegments(eg,HM.hidden),'hidden',21);add(new THREE.LineSegments(eg,HM.edge),'edge',22);
-        const sd=silData(geometry);
+        const sd=large?null:silData(geometry);
         if(sd){const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(sd.A.length),3).setUsage(THREE.DynamicDrawUsage));
           sg.setDrawRange(0,0);sg.boundingSphere=geometry.boundingSphere||(geometry.computeBoundingSphere(),geometry.boundingSphere);
           for(const [mat,kind,order] of [[HM.hidden,'silHidden',21],[HM.edge,'sil',22]]){const o=new THREE.LineSegments(sg,mat);o.frustumCulled=false;o.userData.sil=sd;add(o,kind,order);}
@@ -1183,7 +1200,7 @@ export function initReview(V){
     return {open:true,kind:dialogCtx?.kind,card:{x:cr.x,y:cr.y,w:cr.width,h:cr.height},
       point:anchorPx?{x:hr.x+anchorPx.x,y:hr.y+anchorPx.y}:null,dragged:!!cardOffset};
   }
-  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,setPinsShown,pinsShown:()=>pinsShown,afterRender:()=>{placeCard();holoTheme();drawLeaders();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
+  return {wantsEdges,edgeOverlays,pinPart,measureFrom,followUpFor,followUpPart,startFollowUp,setPinsShown,pinsShown:()=>pinsShown,onLargeMode:()=>{holoKey='';if(revPeek||revSel)showHolo(revPeek||revSel);},afterRender:()=>{placeCard();holoTheme();drawLeaders();},selectRev,holoOff,setFlick,snapshot,restore,tintFor,beforeLabels,onClick,onKey,onModel,onStatus,toggleScope,inScope,setMode,runDiff,sendPacket,goStop,decide,showTab,
     state:()=>({mode,followParent,repin:RP.state(),pins:S.pins.map(p=>({id:p.id,n:p.n,status:p.status,issue_class:p.issue_class,group:groupOf(classes,p.issue_class),repinned:RP.isRepinned(p),history:(p.history||[]).length,kind:p.kind,parts:p.parts.length,orphaned:orphaned(p),measure:!!p.measure,parent:p.parent||null,attempts:p.attempts||0,edgeChanged:edgeChanged(p),oldEdge:p.kind==='edge'?oldEdgeShown(p):null})),
       pinChanges:pinChanges?{against:pinChanges.against,unchanged:Object.keys(pinChanges.pins||{}).filter(id=>{const p=S.pins.find(x=>x.id===id);return p&&unchangedHere(p);})}:null,
       next:S.next,scope:S.scope.map(p=>p.node),measurements:S.meas.map(m=>m.distance),measureKinds:S.meas.map(m=>m.kind||'point_point'),measPending:measA?measA.type:null,measKeep:keepVis,decisions:S.decisions,tourIdx,

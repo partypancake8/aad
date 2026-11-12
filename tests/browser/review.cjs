@@ -769,12 +769,14 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
  await checkFanOut(X);
  await checkPanes(X);
  await checkToolbarFit(X);
+ await checkPerformance(X);
  assert.deepEqual(errors,[],'no page errors');
  const srvLog=await page.evaluate(async()=>(await (await fetch(new URL('log.json',location.href))).json()).entries.filter(e=>e.level==='error').map(e=>e.msg));
  assert.deepEqual(srvLog.filter(m=>/ResizeObserver/.test(m)),[],'no ResizeObserver loop errors from the tab row');
  console.log(JSON.stringify({passed:true,url:URL0,baseline:bl,parts:[A.node,B.node],checks,packet:pk.packet,screenshot:pk.screenshot,pins:path.join(rd,'pins.json'),shots:SHOTS||null},null,1));
  await page.close();
  }finally{if(context)await context.close();await browser.close();}
+ await checkLargeModel();                         // its own browser, after this one is closed (one browser at a time)
 })().catch(e=>{console.error(e);process.exit(1)});
 
 // ======== class groups, keep pins and repin ========
@@ -1699,3 +1701,151 @@ async function checkToolbarFit(X){
   }finally{fs.rmSync(bj,{force:true});await page.setViewportSize({width:1600,height:1050});await page.goto(URL0);await page.waitForFunction(()=>window.viewer?.state().ready,null,{timeout:120000});}
 }
 
+
+// ======== performance guards (machine-speed independent, plus a generous long-task bound on a large model) ========
+// Picking work is bounded by frames, not by pointer events or model size: a burst of pointer moves dispatched in one
+// task costs at most one raycast and one edge pick per frame; hover never picks while the camera moves; the edge
+// pick's segment grid returns exactly what a full scan returns. Then a synthetic large model (written with the
+// package's own GLB writer, 302 parts, nearly four times the background-preparation threshold) is served by a second viewer: it is prepared
+// by the workers (every part pickable, edges identical to EdgesGeometry), and pointer moves in Select, Pin and Measure
+// mode, an orbit drag and a wheel burst run with no main-thread task over LONG_MS once it is prepared.
+const LONG_MS=250,VIEWER_CMD=['-m','aad','view'];
+const perfOf=page=>page.evaluate(()=>viewer.perf);
+async function pickBurst(page,mode,n=300){
+  if(mode)await page.locator(`#modes [data-mode=${mode}]`).click();
+  await page.waitForTimeout(300);
+  const p0=await perfOf(page);
+  await page.evaluate(n=>{const c=document.getElementById('c'),r=c.getBoundingClientRect();
+    for(let i=0;i<n;i++){const t=i/n;c.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:r.left+r.width*(0.3+0.4*t),clientY:r.top+r.height*(0.45+0.1*Math.sin(t*9)),pointerType:'mouse'}));}},n);
+  await page.waitForTimeout(400);
+  const p1=await perfOf(page);
+  return {moves:n,frames:p1.frame-p0.frame,raycasts:p1.raycasts-p0.raycasts,edgePicks:p1.edgePicks-p0.edgePicks,segTests:p1.segTests-p0.segTests,hovers:p1.hovers-p0.hovers};
+}
+function boundedByFrames(b,what){
+  assert(b.moves>b.frames,`${what}: the burst outnumbers the frames (${JSON.stringify(b)})`);
+  assert(b.raycasts<=b.frames+2,`${what}: at most one raycast per frame (${JSON.stringify(b)})`);
+  assert(b.edgePicks<=b.frames+2,`${what}: at most one edge pick per frame (${JSON.stringify(b)})`);
+}
+async function orbitDrag(page,box,steps=40){
+  const cx=box.x+box.width/2,cy=box.y+box.height/2;
+  await page.mouse.move(cx,cy);await page.keyboard.down('Shift');await page.mouse.down({button:'middle'});
+  for(let i=1;i<=steps;i++){await page.mouse.move(cx+i*4,cy+Math.sin(i/6)*30);await pause(16);}
+  await page.mouse.up({button:'middle'});await page.keyboard.up('Shift');
+}
+async function freePort(){
+  const net=require('node:net');
+  return new Promise((res,rej)=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>res(p));});s.on('error',rej);});
+}
+async function checkPerformance(X){
+  const {page,ok}=X;
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();
+  const box=await page.locator('#c').boundingBox();
+  // bracket demo: bursts in each mode
+  const bs=[];
+  for(const m of ['select','pin','measure']){const b=await pickBurst(page,m);boundedByFrames(b,'bracket '+m);bs.push([m,b.moves,b.frames,b.raycasts,b.edgePicks]);}
+  await page.locator('#modes [data-mode=select]').click();
+  // hover never picks while the camera moves: pointer moves during a wheel zoom (no button held) cost no hover pick,
+  // and the tip catches up once the view settles
+  const cx=box.x+box.width/2,cy=box.y+box.height/2;
+  await page.mouse.move(cx,cy);await page.waitForTimeout(400);
+  const h0=(await perfOf(page)).hovers;
+  for(let i=0;i<16;i++){await page.mouse.wheel(0,i<8?-40:40);await page.mouse.move(cx+(i%2?3:-3),cy+i);await pause(16);}
+  const h1=(await perfOf(page)).hovers;
+  let h2=h1;for(let i=0;i<12&&h2===h1;i++){await page.waitForTimeout(300);await page.mouse.move(cx+5+i,cy+5);await page.waitForTimeout(150);h2=(await perfOf(page)).hovers;}
+  assert(h1-h0<=2,`no hover picks while the camera moves (${h1-h0})`);
+  assert(h2>h1,'hover picks again once the view settles');
+  // the segment grid answers exactly what the full scan does
+  await page.locator('#modes [data-mode=pin]').click();
+  const cmp=await page.evaluate(()=>{const r=document.getElementById('c').getBoundingClientRect();let same=0,diff=[],found=0;
+    for(let y=r.top+40;y<r.bottom-40;y+=23)for(let x=r.left+40;x<r.right-40;x+=23){
+      const a=viewer.edgeAt(x,y),b=viewer.edgeAt(x,y,{linear:true});if(b)found++;
+      if(JSON.stringify(a)===JSON.stringify(b))same++;else if(diff.length<3)diff.push([x,y,a,b]);}
+    return {same,diff,found};});
+  await page.locator('#modes [data-mode=select]').click();
+  assert.deepEqual(cmp.diff,[],'edge pick through the segment grid equals the full scan');
+  assert(cmp.found>=10,`edges found on the bracket (${cmp.found})`);
+  ok(`picking bounded by frames on the bracket ${JSON.stringify(bs)} (mode, moves, frames, raycasts, edge picks); no hover picks while the camera moves; segment grid = full scan at ${cmp.same} points (${cmp.found} on an edge)`);
+}
+// The large model runs in its own browser with the GPU when this machine has one (Metal on a Mac). With software
+// WebGL (SwiftShader, as on a GPU-less machine) every redraw of a quarter million triangles is itself a long task, so
+// the bound then covers the Select-mode pointer moves only (they redraw nothing) and the rest is reported.
+async function checkLargeModel(){
+  const browser=await chromium.launch({headless:true,args:['--enable-gpu','--ignore-gpu-blocklist',...(process.platform==='darwin'?['--use-angle=metal']:[])]});
+  const ok=c=>console.log('ok:',c);
+  try{await largeModel(browser,ok);}finally{await browser.close();}
+}
+async function largeModel(browser,ok){
+  // ---- synthetic large model ----
+  const os=require('node:os'),tmp=fs.mkdtempSync(path.join(os.tmpdir(),'aad-perf-')),glb=path.join(tmp,'large.glb'),proj=path.join(tmp,'proj');
+  fs.mkdirSync(proj);
+  const gen=['import sys, numpy as np','from aad.review.glb import write_parts',
+    'def sphere(r, n, c):',
+    '    u, v = np.meshgrid(np.linspace(0, 2*np.pi, 2*n, endpoint=False), np.linspace(0.02, np.pi-0.02, n))',
+    '    p = np.stack([r*np.sin(v)*np.cos(u)+c[0], r*np.sin(v)*np.sin(u)+c[1], r*np.cos(v)+c[2]], -1).reshape(-1, 3)',
+    '    i = np.arange(n-1)[:, None]*2*n; j = np.arange(2*n)[None, :]; a = i+j; b = i+(j+1)%(2*n); c2 = a+2*n; d = b+2*n',
+    '    t = np.concatenate([np.stack([a, b, d], -1).reshape(-1, 3), np.stack([a, d, c2], -1).reshape(-1, 3)])',
+    '    return p.astype(np.float32), t.astype(np.uint32)',
+    'parts = {}',
+    'for k in range(300):',
+    '    parts["fastener %03d" % k] = sphere(3.0, 12, ((k % 20)*12.0, (k // 20)*12.0, 0.0))',
+    'for k in range(2):',
+    '    parts["housing %d" % k] = sphere(30.0, 100, (k*70.0, -60.0, 20.0))',
+    'write_parts(sys.argv[1], parts)',
+    'print(sum(len(t) for _, t in parts.values()), len(parts))'].join('\n');
+  const g=spawnSync(PY,['-c',gen,glb],{encoding:'utf8',env:{...process.env,PYTHONPATH:REPO}});
+  assert.equal(g.status,0,'synthetic model: '+g.stderr);
+  const [nTris,nParts]=g.stdout.trim().split(/\s+/).map(Number);
+  assert(nTris>3*60000&&nParts>=300,'synthetic model size '+g.stdout);
+  const port=await freePort(),url=`http://127.0.0.1:${port}/`;
+  const srv=require('node:child_process').spawn(PY,[...VIEWER_CMD,glb,'--project',proj,'--port',String(port),'--no-open'],{env:{...process.env,PYTHONPATH:REPO},stdio:['ignore','ignore','pipe']});
+  let serr='';srv.stderr.on('data',d=>{serr+=d;});
+  // a modest viewport and triangle count: this browser may render in software, and a frame's draw is not what is
+  // being guarded here (the parts count and the picking and preparation work are)
+  const ctx=await browser.newContext({viewport:{width:1100,height:760}});
+  try{
+    for(let i=0;i<100;i++){try{const r=await fetch(url+'models.json');if(r.ok)break;}catch(e){}await pause(200);}
+    const lp=await ctx.newPage(),errs=[];lp.on('pageerror',e=>errs.push(e.message));
+    await lp.addInitScript(()=>{window.__lt=[];try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__lt.push([e.startTime,e.duration]);}).observe({type:'longtask',buffered:true});}catch(e){}});
+    const t0=Date.now();
+    await lp.goto(url);
+    await lp.waitForFunction(()=>window.viewer?.state().ready,null,{timeout:120000});
+    const firstMs=Date.now()-t0;
+    await lp.waitForFunction(()=>{const p=viewer.perf;return p.prepMode==='workers'&&p.prepDone>=p.prepTotal&&p.prepTotal>0;},null,{timeout:180000,polling:200});
+    const prepMs=Date.now()-t0;
+    const st=await lp.evaluate(async()=>{const s=viewer.state(),T=await import('three'),ms=viewer.meshes();let edges=0,same=0,segs=0;
+      for(const m of ms){const e=m.children.find(c=>c.userData.cadEdge);if(e){edges++;segs+=e.geometry.attributes.position.count/2;}}
+      for(const m of ms.filter((_,i)=>i%53===0||i>=ms.length-2)){const a=m.children.find(c=>c.userData.cadEdge).geometry.attributes.position.array,b=new T.EdgesGeometry(m.geometry,35).attributes.position.array;
+        if(a.length===b.length&&a.every((v,i)=>v===b[i]))same++;else same-=1000;}
+      return {meshes:ms.length,bvh:s.bvh,pending:s.prepPending,edges,segs,same,large:s.largeMode,ready:s.ready};});
+    assert.equal(st.bvh,st.meshes,'every part of the large model has its picking tree');
+    assert.equal(st.pending,0,'no part left pending');assert.equal(st.edges,st.meshes,'every part got its edges');
+    assert(st.same>=5,'worker edges equal EdgesGeometry on sampled parts ('+st.same+')');
+    await lp.waitForTimeout(800);
+    const box2=await lp.locator('#c').boundingBox();
+    const gl=await lp.evaluate(()=>{const c=document.createElement('canvas').getContext('webgl2'),e=c&&c.getExtension('WEBGL_debug_renderer_info');return c?String(e?c.getParameter(e.UNMASKED_RENDERER_WEBGL):c.getParameter(c.RENDERER)):'none';});
+    const soft=/swiftshader|llvmpipe|software/i.test(gl);
+    const tA=await lp.evaluate(()=>performance.now());
+    const sweep=async ms=>{const n=Math.round(ms/16);for(let i=0;i<=n;i++){const a=i/n;await lp.mouse.move(box2.x+box2.width*(0.15+0.7*a),box2.y+box2.height*(0.5+0.2*Math.sin(a*7)));await pause(16);}};
+    await sweep(1500);
+    const tB=await lp.evaluate(()=>performance.now());
+    await orbitDrag(lp,box2);
+    await lp.mouse.move(box2.x+box2.width/2,box2.y+box2.height/2);for(let i=0;i<10;i++){await lp.mouse.wheel(0,i<5?-120:120);await pause(30);}
+    await lp.waitForTimeout(500);
+    const q0=await perfOf(lp);
+    for(const m of ['pin','measure']){await lp.locator(`#modes [data-mode=${m}]`).click();await sweep(1500);}
+    const q1=await perfOf(lp),sweepPicks=q1.edgePicks-q0.edgePicks,sweepSegs=q1.segTests-q0.segTests;
+    await lp.locator('#modes [data-mode=select]').click();await lp.waitForTimeout(600);
+    const lt=await lp.evaluate(t=>window.__lt.filter(x=>x[0]>=t).map(x=>Math.round(x[1])),tA);
+    const ltSel=await lp.evaluate(([a,b])=>window.__lt.filter(x=>x[0]>=a&&x[0]<b).map(x=>Math.round(x[1])),[tA,tB]);
+    const pinB=await pickBurst(lp,'pin'),measB=await pickBurst(lp,'measure');await lp.locator('#modes [data-mode=select]').click();
+    boundedByFrames(pinB,'large model pin');boundedByFrames(measB,'large model measure');
+    const perPick=sweepSegs/Math.max(1,sweepPicks);
+    assert(sweepPicks>10&&sweepSegs>0,`edge picks ran during the Pin and Measure sweeps (${sweepPicks} picks, ${sweepSegs} segments tested)`);
+    assert(perPick<0.25*st.segs,`the edge pick tests a fraction of the ${st.segs} segments (${perPick.toFixed(0)} per pick)`);
+    const bound=soft?ltSel:lt;
+    assert(Math.max(0,...bound)<=LONG_MS,`no main-thread task over ${LONG_MS} ms while ${soft?'moving the pointer over':'interacting with'} the prepared large model (${gl}: ${JSON.stringify(bound)})`);
+    assert.deepEqual(errs,[],'no page errors on the large model');
+    await lp.close();
+    ok(`large model ${nParts} parts ${nTris} triangles on ${gl}: first frame ${firstMs} ms, prepared by workers ${prepMs} ms, ${st.segs} edge segments; long tasks while interacting ${JSON.stringify(lt)}, Select pointer moves ${JSON.stringify(ltSel)} (bound ${LONG_MS} ms${soft?' on the pointer moves: software WebGL':''}); ${sweepPicks} edge picks testing ${perPick.toFixed(0)} segments each; bursts pin ${JSON.stringify(pinB)} measure ${JSON.stringify(measB)}`);
+  }finally{await ctx.close();srv.kill();fs.rmSync(tmp,{recursive:true,force:true});if(serr&&/Traceback/.test(serr))console.error(serr);}
+}

@@ -90,7 +90,7 @@
 <div id="split-r" class="split" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the right panel" aria-valuemin="300" aria-valuemax="720"
   title="Drag to resize the right panel; Left and Right arrows move it; double-click resets"><button class="fold" title="Hide the right panel (.)" aria-label="Hide the right panel"><i class="ic i-chevron-right"></i></button></div>
 <button id="rail-r" class="rail" title="Show the right panel (.)" aria-label="Show the right panel"><i class="ic i-chevron-left"></i></button>
-<main id="view"><canvas id="c"></canvas><div id="camnote" hidden><span id="camnote-t"></span></div><div id="tip"></div><div id="modehint" hidden></div><div id="rect" hidden></div><div id="triad-label">X red, Y green, Z blue</div>
+<main id="view"><canvas id="c"></canvas><div id="camnote" hidden><span id="camnote-t"></span></div><div id="tip"></div><div id="large-note" hidden role="status"><span id="large-note-t"></span><button id="large-note-x" title="Dismiss" aria-label="Dismiss"><i class="ic i-x"></i></button></div><div id="prep" hidden role="status"><span id="prep-t"></span><span class="prep-track"><span id="prep-bar"></span></span></div><div id="modehint" hidden></div><div id="rect" hidden></div><div id="triad-label">X red, Y green, Z blue</div>
 <div id="cube-nav" role="toolbar" aria-label="View cube">
   <button id="cube-home" title="Home view (Shift+H)" aria-label="Home view"><i class="ic i-home"></i></button>
   <button id="cube-roll-ccw" title="Rotate the view 90 degrees counter-clockwise" aria-label="Rotate the view counter-clockwise"><i class="ic i-rotate"></i></button>
@@ -190,6 +190,7 @@
     <label title="Any colour">Custom <input type="color" id="bg-custom" value="#e5e7eb"></label></div>
   <div class="oh">Display</div>
   <label><input type="checkbox" id="opt-edges"> Feature edges</label>
+  <label id="opt-large-row" title="Over 2.5 million triangles the Revisions hologram draws crease edges only (no curved-surface silhouettes) and builds them in the background"><input type="checkbox" id="opt-large" checked> Large model mode <span class="muted">automatic over 2.5 M triangles</span></label>
   <label id="opt-dim-row" title="Pins whose point is behind other geometry from this view draw with a dimmed fill and a dashed ring" hidden><input type="checkbox" id="opt-dim-occluded" checked> Dim pins behind geometry</label>
 </div>
 <div id="part-info" role="dialog" aria-modal="false" aria-labelledby="part-info-h" hidden>
