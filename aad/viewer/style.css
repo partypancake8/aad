@@ -96,7 +96,7 @@ input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--acc);fle
 #c{display:block;width:100%;height:100%}
 #labels{position:absolute;inset:0;pointer-events:none;z-index:3}   /* its own stacking context: label z-order never rises above the pin card */
 #viewcube{z-index:4}
-#tip{position:absolute;pointer-events:none;display:none;background:#0d1117ee;border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:14px;white-space:nowrap;z-index:6}
+#tip{position:absolute;pointer-events:none;display:none;background:#0d1117ee;border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:14px;white-space:nowrap;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;z-index:6}
 #triad-label{color:#1f2937;position:absolute;left:8px;bottom:6px;font-size:12px;pointer-events:none}
 #modehint{position:absolute;left:50%;top:10px;transform:translateX(-50%);background:#0d1117e8;border:1px solid var(--acc2);color:var(--fg);border-radius:8px;padding:6px 12px;font-size:14px;pointer-events:none;z-index:5}
 #modehint[hidden],#rect[hidden]{display:none}

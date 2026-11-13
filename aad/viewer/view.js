@@ -675,7 +675,27 @@ function applyViewOffsets(v){
     if(entry.xyz)rec.obj.position.add(new THREE.Vector3(...entry.xyz));
   }
 }
-function markView(n){activeView=n;applyViewOffsets(VIEWS.find(v=>v.name===n));document.querySelectorAll('#views button').forEach(b=>b.classList.toggle('on',b.dataset.v===n));dirty=true;}
+function markView(n){activeView=n;applyViewOffsets(VIEWS.find(v=>v.name===n));syncViewLit(true);dirty=true;}
+// The VIEWS row lights the view the camera is on now, whatever put it there (a view button, the view cube, a fly-to,
+// Fit sel, a double-click, undo): a camera view while it is the camera, else the framed view whose direction the
+// camera looks along within VIEW_LIT_DEG (any roll, distance or target); nothing once the camera is turned off every
+// view's axis. Checked on every rendered frame.
+const VIEW_LIT_DEG=0.5,VIEW_LIT_COS=Math.cos(VIEW_LIT_DEG*D2R),_vl=new THREE.Vector3(),_ve=new THREE.Vector3(),_vd=new THREE.Vector3();
+let litView;
+function litViewNow(){
+  if(camMode)return camMode.name;
+  cam.updateMatrixWorld();cam.getWorldDirection(_vd);let best=null,bc=VIEW_LIT_COS;
+  for(const v of VIEWS){
+    if(v.kind==='camera'||!v.eye||!v.focal)continue;
+    const c=_vl.fromArray(v.focal).sub(_ve.fromArray(v.eye)).normalize().dot(_vd);
+    if(c>=bc){bc=c;best=v.name;}
+  }
+  return best;
+}
+function syncViewLit(force=false){
+  const n=litViewNow();if(n===litView&&!force)return;litView=n;
+  document.querySelectorAll('#views button').forEach(b=>b.classList.toggle('on',b.dataset.v===n));
+}
 const FITTED=[['iso',[1,-1,0.8],[0,0,1]],['front',[0,-1,0],[0,0,1]],['right',[1,0,0],[0,0,1]],['back',[0,1,0],[0,0,1]],
   ['top',[0,0,1],[0,1,0]],['bottom',[0,0,-1],[0,-1,0]]];
 function fittedViews(){
@@ -1396,10 +1416,30 @@ function hover(now){
   const m=ed?ed.mesh:h?h.object:null;
   if(!m){tip.style.display='none';canvas.style.cursor='';return;}
   const r=host.getBoundingClientRect(),nm=nameOf(m),th=throughOf(ed?ed.hit:h);
-  tip.textContent=(ed?`Edge ${edgeLenText(ed.record.length_mm)} mm on ${nm}`:nm)+(th&&th.object!==m?` (through ${nameOf(th.object)})`:'');
   tip.style.display='block';canvas.style.cursor='pointer';
-  // a long tip (a "through" name) flips to the left of the cursor rather than running off the view
-  const tw=tip.offsetWidth,x=e.clientX-r.left;tip.style.left=Math.max(4,x+14+tw>r.width-4?x-14-tw:x+14)+'px';tip.style.top=(e.clientY-r.top+14)+'px';
+  fitTip(tip,ed?`Edge ${edgeLenText(ed.record.length_mm)} mm on `:'',nm,th&&th.object!==m?` (through ${nameOf(th.object)})`:'',r.width-2*TIP_MARGIN);
+  placeTip(tip,e.clientX-r.left,e.clientY-r.top,r.width,r.height);
+}
+// The hover tip always stays inside the 3D view: at most the view width less TIP_MARGIN on each side; a name that does
+// not fit is shortened in the middle (its start and end stay, the "(through <clear part>)" suffix stays whole) and
+// whatever still does not fit wraps. It sits right of and below the cursor, flips left or above when that side does
+// not fit, and is clamped into the view when neither does.
+const TIP_MARGIN=4,TIP_GAP=14;
+const midCut=(t,k)=>k>=t.length?t:t.slice(0,Math.ceil(k/2))+'\u2026'+t.slice(t.length-Math.floor(k/2));
+function fitTip(tip,lead,name,suffix,maxW){
+  tip.style.maxWidth=Math.max(40,maxW)+'px';tip.style.whiteSpace='nowrap';
+  tip.textContent=lead+name+suffix;tip.title='';tip.dataset.full=lead+name+suffix;
+  if(tip.scrollWidth<=tip.clientWidth+0.5)return;
+  let lo=0,hi=name.length-1;                                       // the most characters of the name that fit
+  while(lo<hi){const k=Math.ceil((lo+hi)/2);tip.textContent=lead+midCut(name,k)+suffix;if(tip.scrollWidth<=tip.clientWidth+0.5)lo=k;else hi=k-1;}
+  tip.textContent=lead+midCut(name,lo)+suffix;
+  if(tip.scrollWidth>tip.clientWidth+0.5)tip.style.whiteSpace='normal';   // a suffix wider than the view wraps
+}
+function placeTip(tip,x,y,W,H){
+  const tw=tip.offsetWidth,th=tip.offsetHeight,M=TIP_MARGIN,G=TIP_GAP;
+  let left=x+G+tw<=W-M?x+G:x-G-tw>=M?x-G-tw:W-M-tw;left=Math.max(M,Math.min(left,W-M-tw));
+  let top=y+G+th<=H-M?y+G:y-G-th>=M?y-G-th:H-M-th;top=Math.max(M,Math.min(top,H-M-th));
+  tip.style.left=left+'px';tip.style.top=top+'px';
 }
 
 // ---- feature-edge pick (mesh level): the segments of the Edges display. A pick is the segment nearest the cursor
@@ -2129,7 +2169,7 @@ window.viewer={get camera(){return cam;},controls,nodes,vis,modules,select,clear
     goTarget:lastTarget,focusChip:$('focus-chip')&&!$('focus-chip').hidden?$('focus-chip').textContent.replace(/\s+/g,' ').trim():null,fadeHidden:OPTS.fadeHidden!==false,
     pivot:pivotFor(null)?.toArray()||null,viewCentre:viewCentre()?.toArray()||null,pivotShown:pivotObj.visible,pivotAt:pivotObj.visible?pivotObj.position.toArray():null,
     hidden:[...vis].filter(([,v])=>!v).map(([k])=>k),clip:clipPlanes.map(p=>[p.normal.toArray(),p.constant]),
-    explode:+$('explode').value,grid:showGrid,view:activeView,cameraView:camMode?camMode.name:null,fov:cam.isPerspectiveCamera?cam.fov:null,
+    explode:+$('explode').value,grid:showGrid,view:activeView,viewLit:litView??null,cameraView:camMode?camMode.name:null,fov:cam.isPerspectiveCamera?cam.fov:null,
     proj:cam===ortho?'ortho':'persp',projDisabled:$('proj').disabled,fisheye:fishOn(),fishRect:FISH.rect,camLabel:$('camnote').hidden?null:$('camnote-t').textContent,orbit:controls.enabled,selected:sel&&sel.key,renders,ctrlTrue,status:$('status').dataset.full||$('status').textContent,brandFit:$('brand').dataset.fit,
     history:hist.length,hp,undo:!$('undo').disabled,redo:!$('redo').disabled,
     mask:mask?{p:mask.position.toArray(),pieces:maskPieces()}:null,sides:showSides,cube:!!cube,cubeBox:cube?(()=>{const r=(cube._domElement||cube.domElement).getBoundingClientRect(),h=host.getBoundingClientRect();return {top:r.top-h.top,right:h.right-r.right,w:r.width,h:r.height};})():null,controls:'camera-controls 3.1.2',
@@ -2297,6 +2337,7 @@ let lastDirty=0,camMoving=false;
   if(!dirty)return;
   if(SOFT){if(!lastDirty){lastDirty=now;return;}if(now-lastDirty<60)return;}   // the preview takes ~1 s: draw once settled
   dirty=false;lastDirty=0;renders++;
+  syncViewLit();
   if(SOFT){softRender();return;}
   renderNow();
 })();

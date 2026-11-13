@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The VIEWS row lights the view the camera is on now, whatever put it there (a view button, the view cube, a
+  fly-to, Fit sel, a double-click, undo): the axis view whose direction the camera looks along within 0.5 degrees,
+  and nothing once you orbit off every axis. It used to stay on iso after the camera moved to another axis.
+- The hover tip always stays inside the 3D view: a long name is shortened in the middle (its start, its end and the
+  "(through <clear part>)" suffix stay), and the tip flips or is clamped at the edges of the view.
+- Browser tests: every background preset (dark, black, white, light grey) paints the rendered view its colour and
+  keeps it after a reload.
+
 - Framing a target: one clamp for every go-to-target call, frame radius = clamp(target radius x 1.6, max(30 mm,
   8 % of the model radius) for a part or 12 % for a pin or detector evidence, the model radius), so a small screw
   shows its surroundings and a pin shows the feature it sits on. An edge pin's fly-to frames the edge as it is now

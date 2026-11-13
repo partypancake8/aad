@@ -282,6 +282,35 @@ async function pickChip(page,cls){
   {const q=await look();assert(Math.abs(q.camUp[2]-1)<1e-9&&Math.abs(q.up[0]*q.d[1]-q.up[1]*q.d[0])<1e-6,'Home lands level, Z up');}
   ok('view cube arrows: roll 90 degrees both ways, step up, down, left and right to the adjacent face, one undo step each, keyboard focusable');
  }
+ // ---- (r13 fix B) the VIEWS row lights the view the camera is on, whatever moved it there: the iso button, the view
+ // cube FRONT face, a cube arrow, a fly-to that lands on an axis view, Fit sel along that axis, undo; nothing after an
+ // orbit off every axis ----
+ {
+  const lit=()=>page.evaluate(()=>({on:[...document.querySelectorAll('#views button.on')].map(b=>b.dataset.v),state:viewer.state().viewLit}));
+  const seen=[];
+  const expectLit=async(want,what)=>{await page.waitForTimeout(150);const l=await lit();
+    assert.deepEqual(l.on,want?[want]:[],`${what}: the VIEWS row lights ${want||'nothing'} (${JSON.stringify(l)})`);assert.equal(l.state,want,what);seen.push(`${what}: ${want||'none'}`);};
+  await page.locator('#views button[data-v=iso]').click();await page.waitForTimeout(900);await expectLit('iso','iso button');
+  const cb3=await page.evaluate(()=>{const e=viewer.cube._domElement||viewer.cube.domElement;const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};});
+  for(const [fx,fy] of [[0.30,0.62],[0.27,0.66],[0.33,0.58],[0.25,0.6]]){
+   await page.mouse.move(cb3.x+cb3.w*fx,cb3.y+cb3.h*fy,{steps:6});await page.mouse.click(cb3.x+cb3.w*fx,cb3.y+cb3.h*fy);
+   await page.waitForTimeout(1400);if((await look()).d[1]<-0.99)break;
+  }
+  assert((await look()).d[1]<-0.99,'the cube FRONT face from iso');await expectLit('front','view cube FRONT face');
+  await page.mouse.move(cb3.x+cb3.w/2,cb3.y+cb3.h/2,{steps:4});await page.waitForTimeout(300);
+  await page.locator('#cube-right').click();await page.waitForTimeout(700);await expectLit('right','cube right arrow');
+  // a fly-to that lands on the back axis at another target and distance (as a hidden target's clearest side does)
+  await camSet({cam:[startCam.target[0]+7,startCam.target[1]+400,startCam.target[2]-3],target:[startCam.target[0]+7,startCam.target[1],startCam.target[2]-3],zoom:startCam.zoom,up:[0,0,1]});
+  await page.waitForTimeout(300);await expectLit('back','a fly-to onto the back axis');
+  await page.locator('#views button[data-v=top]').click();await page.waitForTimeout(900);await expectLit('top','top button');
+  await page.evaluate(()=>{viewer.select([...viewer.nodes.keys()].find(k=>viewer.nodes.get(k).leaf));viewer.commit();});await page.locator('#fitsel').click();await page.waitForTimeout(900);
+  await expectLit('top','Fit sel keeps the top axis');
+  await page.mouse.move(cx,cy+60);await page.keyboard.down('Shift');await page.mouse.down({button:'middle'});await page.mouse.move(cx+60,cy+90,{steps:6});
+  await page.mouse.up({button:'middle'});await page.keyboard.up('Shift');await page.waitForTimeout(600);await expectLit(null,'an orbit off every axis');
+  await page.keyboard.press('Control+z');await page.waitForTimeout(700);await expectLit('top','undo back onto the top axis');
+  await page.keyboard.press('Escape');await page.locator('#home').click();await page.waitForTimeout(900);
+  ok('VIEWS row follows the camera: '+seen.join(', '));
+ }
  // ---- pick two parts: sample the view with the page's own picker ----
  const samples=await page.evaluate(()=>{const r=document.querySelector('#c').getBoundingClientRect(),found=new Map();
   for(let y=r.top+60;y<r.bottom-60;y+=14)for(let x=r.left+60;x<r.right-160;x+=14){const i=viewer.pickAt(x,y);
@@ -538,6 +567,7 @@ async function pickChip(page,cls){
  await page.locator('#options').click();await page.locator('#bg-presets [data-bg=light]').click();await page.keyboard.press('Escape');
  assert.equal(await page.evaluate(()=>viewer.state().background),'#e5e7eb','light grey preset restores the default');
  ok('Options: background black survives reload, clear colour follows, edges toggle');
+ await checkBackgroundPresets(page,ok);
  // ---- files on disk match their schemas ----
  await pause(500);
  const rd=path.join(PROJECT,'.cadreview');
@@ -1058,6 +1088,37 @@ const measDom=page=>page.evaluate(()=>{const shown=e=>e.isConnected&&getComputed
     dots:[...document.querySelectorAll('#labels .measure-dot[data-measure]')].filter(shown).map(R),
     all:document.querySelectorAll('#labels .measure-label').length};});
 const snapMeas=page=>page.evaluate(()=>viewer.review.snapshot().ms);
+// the colour of the top-left pixel of a PNG (8-bit RGB or RGBA, non-interlaced), as #rrggbb
+function pngFirstPixel(buf){
+  let o=8;const idat=[];
+  while(o<buf.length){const n=buf.readUInt32BE(o),t=buf.toString('ascii',o+4,o+8),d=buf.subarray(o+8,o+8+n);
+    if(t==='IDAT')idat.push(d);o+=12+n;}
+  const raw=require('node:zlib').inflateSync(Buffer.concat(idat)),px=[];
+  for(let i=0;i<3;i++)px.push(raw[1+i]);    // the first pixel of the first row: every PNG filter leaves it as stored
+  return '#'+px.map(v=>v.toString(16).padStart(2,'0')).join('');
+}
+// (r13 fix A) every background preset in Options changes the rendered pixels of an empty spot of the 3D view to the
+// preset colour, after a real mouse click on the preset, and the colour survives a reload. Bug reported: "Dark does
+// not apply"; checked on the Froggy scratch copy and here with real clicks: it applies.
+async function checkBackgroundPresets(page,ok){
+  const want={light:'#e5e7eb',white:'#ffffff',dark:'#2d333b',black:'#000000'};
+  const empty=async()=>page.evaluate(()=>{const r=document.getElementById('c').getBoundingClientRect();
+    for(const [fx,fy] of [[0.02,0.12],[0.98,0.97],[0.5,0.97],[0.02,0.5],[0.98,0.5],[0.3,0.03]]){const x=Math.round(r.left+r.width*fx),y=Math.round(r.top+r.height*fy);
+      if(document.elementFromPoint(x,y)?.id==='c'&&!viewer.pickAt(x,y))return {x,y};}return null;});
+  const pixel=async()=>{await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+    const p=await empty();assert(p,'an empty spot of the 3D view');return pngFirstPixel(await page.screenshot({clip:{x:p.x,y:p.y,width:1,height:1}}));};
+  const seen=[];
+  for(const k of ['dark','black','white','light']){
+    await page.locator('#options').click();const b=await page.locator(`#bg-presets [data-bg=${k}]`).boundingBox();
+    await page.mouse.click(b.x+b.width/2,b.y+b.height/2);await page.waitForTimeout(200);await page.keyboard.press('Escape');await page.waitForTimeout(300);
+    const a=await pixel();
+    assert.equal(a,want[k],`the ${k} preset paints the 3D view ${want[k]} (rendered pixel ${a})`);
+    assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll('#bg-presets button.on')].map(b=>b.dataset.bg)),[k],`only ${k} is marked`);
+    await reloadReady(page);
+    const r=await pixel();assert.equal(r,want[k],`the ${k} background survives a reload (rendered pixel ${r})`);seen.push(`${k} ${a}`);
+  }
+  ok('Options: every background preset (dark, black, white, light grey) paints the rendered 3D view its colour and survives a reload: '+seen.join(', '));
+}
 
 async function checkWeight(page,ok){
  // (1) the Weight block sits under Section and Explode and fits a 1280 x 800 window; the tree gives way first
@@ -1903,6 +1964,8 @@ async function largeModel(browser,ok){
 // cover again.
 const BOX=(x0,y0,z0,x1,y1,z1)=>[[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]],
   [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]]];
+// r13: a part with a long name behind the clear mesh panel (the hover tip check)
+const LONG_NAME='Integrated drum base: carrier + Ring B + tube seat with integral battery upper stops and a deliberately long name, PETG';
 // build 2 thins the side wall from 3 mm to 0.3 mm (a thin_feature warning with evidence)
 function writeClearModel(file,build=1){
   const parts={'base plate':[...BOX(-60,-40,0,60,40,6),[0.55,0.58,0.62]],'block':[...BOX(-10,-10,6,10,10,26),[0.85,0.45,0.2]],
@@ -1913,7 +1976,7 @@ function writeClearModel(file,build=1){
     'tiny tab':[...BOX(-6.6,-14,10,-6,-13.4,10.6),[0.3,0.3,0.32]],
     // r12: an enclosure seen from -Y: a clear mesh panel, an opaque cage bar off the middle of the drum part (it cuts
     // the part in two without covering its centre or its corners), an inner plate whose centre a small screw covers
-    'mesh panel':[...BOX(260,-40,0,340,-38,120),[0.7,0.8,0.9,0.3]],'cage bar':[...BOX(284,-50,0,290,-46,80),[0.1,0.1,0.12]],
+    'mesh panel':[...BOX(260,-40,0,340,-38,160),[0.7,0.8,0.9,0.3]],[LONG_NAME]:[...BOX(270,-10,130,330,10,150),[0.6,0.6,0.7]],'cage bar':[...BOX(284,-50,0,290,-46,80),[0.1,0.1,0.12]],
     'drum part':[...BOX(270,-10,20,330,10,60),[0.3,0.55,0.85]],'inner plate':[...BOX(270,-10,90,330,10,110),[0.5,0.7,0.4]],
     'small screw':[...BOX(297,-14,97,303,-12,103),[0.2,0.2,0.22]]};
   const code=['import sys, json, numpy as np','from aad.review.glb import write_parts',
@@ -1941,6 +2004,7 @@ async function checkClearModel(){
     await warningEvidenceChecks(C);
     await tourFocusChecks(C);
     await targetChecks(C);
+    await tipChecks(C);
     await edgePrecedenceChecks(C);
     await honestLabelChecks(C);
     await pinCardChecks(C);
@@ -2224,6 +2288,44 @@ async function targetChecks(C){
   assert.equal(pin.kind,'point','a point pin: '+JSON.stringify(pin.edge&&pin.edge.length_mm));
   assert(s.g.kind==='pin'&&s.g.tr===0&&near1(s.g.r,minSpot),'a point pin is framed with the pin minimum around it: '+JSON.stringify(s.g));
   ok(`going to a target: Fit sel on the block hidden from +X takes a clear axis view without a fade; the gear inside the opaque housing fades the rest (chip "Focused on inner gear. Show whole model"), a click reaches it, Esc and the chip restore opacity exactly, Fit ends the fade, Options off is remembered; frame clamp (model radius ${FR.model.toFixed(1)} mm): small screw ${minPart.toFixed(1)} mm, base plate 1.6 x radius, a larger target the model radius, a point pin ${minSpot.toFixed(1)} mm; visibility: ${visNote}`);
+}
+// (r13 fix C) the hover tip always stays inside the 3D view: at view widths from 360 px up and on pages 1100 and 1600 px wide, hovering the long-named part
+// behind the clear mesh panel at the left edge, the middle and the right edge of the view in Pin mode, the tip is
+// inside the view, keeps the start of the name and the whole "(through mesh panel)" suffix, and shortens the name in
+// the middle only when it does not fit.
+async function tipChecks(C){
+  const {page,ok}=C;const vp=page.viewportSize(),out=[];
+  await page.keyboard.press('Escape');await page.locator('#modes [data-mode=pin]').click();
+  try{
+    // view widths from 360 px up (the page sized to give them), then the page at 1100 and 1600 px wide
+    for(let [want,page_w] of [[360],[420],[560],[720],[1000],[0,1100],[0,1600]]){
+      let w=page_w||Math.max(want+300,vp.width-400),hw=0;
+      for(let i=0;i<4;i++){await page.setViewportSize({width:Math.round(w),height:vp.height});await page.waitForTimeout(300);
+        hw=await page.evaluate(()=>document.getElementById('view').clientWidth);if(page_w||Math.abs(hw-want)<=2)break;w+=want-hw;}
+      if(page_w)want=hw;
+      assert(Math.abs(hw-want)<=2,`the 3D view is ${want} px wide (${hw})`);
+      // from -Y, the part 1.4 view widths wide on screen
+      await page.evaluate(([want])=>{const k=viewer.controls;k.enableDamping=false;k.setFocalOffset(0,0,0,false);viewer.camera.up.set(0,0,1);k.updateCameraUp();
+        const H=document.getElementById('c').clientHeight,ppm=1.4*want/60;
+        if(viewer.camera.isOrthographicCamera){k.setLookAt(300,-600,140,300,0,140,false);k.zoomTo(ppm*400/H,false);}
+        else{const d=H/(ppm*2*Math.tan(viewer.camera.fov*Math.PI/360));k.setLookAt(300,-d,140,300,0,140,false);}
+        k.update(0);viewer.commit();},[want]);
+      await page.waitForTimeout(400);
+      const v=await page.locator('#c').boundingBox(),[pc]=await toClient(page,[[300,-10,146]]);   // above mid-height: the pane toggles sit on the view edges there
+      for(const x of [v.x+6,v.x+v.width/2,v.x+v.width-6]){
+        await page.mouse.move(x+(x<v.x+v.width/2?8:-8),pc.y);await page.mouse.move(x,pc.y,{steps:3});await page.waitForTimeout(350);
+        const t=await page.evaluate(()=>{const t=document.getElementById('tip'),r=t.getBoundingClientRect(),c=document.getElementById('c').getBoundingClientRect();
+          return {shown:getComputedStyle(t).display!=='none',text:t.textContent,l:r.left,r:r.right,t:r.top,b:r.bottom,vl:c.left,vr:c.right,vt:c.top,vb:c.bottom,sw:t.scrollWidth,cw:t.clientWidth};});
+        assert(t.shown,`a tip at x ${x.toFixed(0)} in a ${want} px view`);
+        assert(t.l>=t.vl-0.5&&t.r<=t.vr+0.5&&t.t>=t.vt-0.5&&t.b<=t.vb+0.5,`the tip stays inside the ${want} px view: `+JSON.stringify(t));
+        assert(t.sw<=t.cw+1,'nothing clipped inside the tip: '+JSON.stringify(t));
+        assert(/\(through mesh panel\)$/.test(t.text)&&/^(Edge [\d.]+ mm on )?Integrated/.test(t.text),'the start of the name and the whole suffix stay: '+t.text);
+        assert(t.text.includes('\u2026')||t.text.includes(LONG_NAME),'shortened in the middle or whole: '+t.text);
+        out.push([page_w?`page ${page_w}`:want,Math.round(t.r-t.l),t.text.includes('\u2026')]);
+      }
+    }
+  }finally{await page.setViewportSize(vp);await page.waitForTimeout(300);await page.mouse.move(5,5);await page.keyboard.press('Escape');await page.locator('#modes [data-mode=select]').click();}
+  ok('hover tip inside the 3D view at view widths 360 to 1000 px and pages 1100 and 1600 px wide, left edge, middle and right edge, the name shortened in the middle with the "(through mesh panel)" suffix kept: '+JSON.stringify(out));
 }
 // (r11 fix 2) edge snapping never hijacks a click: in Pin mode a pointer on the block face 5 px from the 0.6 mm tab
 // in front of it takes the block face (the tab's chain is under 2 mm), Cmd+click takes that nearest edge anyway; the
